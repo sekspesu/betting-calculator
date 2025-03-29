@@ -69,8 +69,8 @@ def adjust_bankroll(amount):
 def extract_bet_info(image_path):
     try:
         img = Image.open(image_path)
-        # Set Tesseract configuration to preserve line breaks and improve accuracy
-        custom_config = r'--oem 3 --psm 6 -l eng'  # Added English language explicitly
+        # Enhanced Tesseract configuration
+        custom_config = r'--oem 3 --psm 6 -l eng+est'  # Added Estonian language support
         text = pytesseract.image_to_string(img, config=custom_config)
         logging.info(f"Extracted text from image: {text}")
         
@@ -82,81 +82,75 @@ def extract_bet_info(image_path):
         bets = []
         current_bet = {}
         
-        for line in lines:
+        # Keywords to skip
+        skip_words = ["cash out", "win", "loss", "tulemus", "üksikpanus", "panusesumma", 
+                     "võidusumma", "normaalaeg", "normaalaeg tulemus", "eduga võit", 
+                     "kaotus", "võit", "võidusumma", "väljamakse"]
+        
+        # Pattern for stake amount (handles both comma and dot decimals)
+        stake_pattern = re.compile(r'(\d+[,\.]\d+)\s*€')
+        # Pattern for odds (handles various formats)
+        odds_pattern = re.compile(r'([^\d]+?)\s+(\d+[,\.]\d+)\s*$')
+        
+        for i, line in enumerate(lines):
             line = line.strip()
-            if not line:  # Skip empty lines
+            if not line:
                 continue
                 
             logging.info(f"Processing line: {line}")
             
-            # Look for stake amounts (e.g., "22,00 €" or "Panusesumma")
+            # Look for stake amounts
             if "€" in line:
-                stake_match = re.search(r'(\d+[,.]\d+)\s*€', line)
+                stake_match = stake_pattern.search(line)
                 if stake_match:
-                    stake_str = stake_match.group(1)
-                    stake = float(stake_str.replace(",", "."))
+                    stake_str = stake_match.group(1).replace(",", ".")
+                    stake = float(stake_str)
                     current_bet["stake"] = stake
                     logging.info(f"Found stake: {stake}")
             
-            # Look for team name and odds (e.g., "Atlético Madrid 1.61")
-            odds_match = re.search(r'([^\d]+?)\s+(\d+\.\d+)\s*$', line)
-            if odds_match and "Normaali tulemus" not in line:
+            # Look for team names and odds
+            odds_match = odds_pattern.search(line)
+            if odds_match:
                 match = odds_match.group(1).strip()
-                odds = float(odds_match.group(2))
+                odds = float(odds_match.group(2).replace(",", "."))
                 
-                # Skip if it's not a team name
-                if any(x in match.lower() for x in ["cash out", "win", "loss", "tulemus", "üksikpanus", "panusesumma", "võidusumma"]):
+                # Skip if it contains any of the skip words
+                if any(word.lower() in match.lower() for word in skip_words):
                     continue
                     
-                current_bet["match"] = match
-                current_bet["odds"] = odds
-                logging.info(f"Found match and odds: {match} - {odds}")
-                
-                # If we have both stake and odds, add the bet
-                if "stake" in current_bet:
-                    bets.append(dict(current_bet))
-                    current_bet = {}
+                # Check if it's a valid team/player name (at least 3 characters, no special patterns)
+                if len(match) >= 3 and not any(char.isdigit() for char in match):
+                    current_bet["match"] = match
+                    current_bet["odds"] = odds
+                    logging.info(f"Found match and odds: {match} - {odds}")
+                    
+                    # Look ahead for stake in next few lines if not found
+                    if "stake" not in current_bet:
+                        for next_line in lines[i+1:i+4]:
+                            if "€" in next_line:
+                                stake_match = stake_pattern.search(next_line)
+                                if stake_match:
+                                    stake_str = stake_match.group(1).replace(",", ".")
+                                    current_bet["stake"] = float(stake_str)
+                                    break
+                    
+                    # If we have both stake and odds, add the bet
+                    if "stake" in current_bet:
+                        bets.append(dict(current_bet))
+                        current_bet = {}
         
         if bets:
             logging.info(f"Successfully extracted {len(bets)} bets: {bets}")
-            feedback_label.config(text=f"Found {len(bets)} bets:\n" + 
-                "\n".join([f"{b['match']} ({b['odds']}) - €{b['stake']:.2f}" for b in bets]))
+            feedback_text = "Found bets:\n"
+            for b in bets:
+                feedback_text += f"• {b['match']}\n  Odds: {b['odds']}, Stake: €{b['stake']:.2f}\n"
+            feedback_label.config(text=feedback_text)
             return bets
         else:
-            # Try alternate format
-            for line in lines:
-                if "Üksikpanus" in line and "€" in line:
-                    # Try to find stake amount
-                    stake_match = re.search(r'(\d+[,.]\d+)\s*€', line)
-                    if stake_match:
-                        stake_str = stake_match.group(1)
-                        stake = float(stake_str.replace(",", "."))
-                        current_bet["stake"] = stake
-                        logging.info(f"Found stake (alternate): {stake}")
-                
-                # Look for team name with odds in next line
-                odds_match = re.search(r'([^\d]+?)\s+(\d+\.\d+)', line)
-                if odds_match:
-                    match = odds_match.group(1).strip()
-                    odds = float(odds_match.group(2))
-                    if not any(x in match.lower() for x in ["cash out", "win", "loss", "tulemus", "üksikpanus", "panusesumma", "võidusumma"]):
-                        current_bet["match"] = match
-                        current_bet["odds"] = odds
-                        logging.info(f"Found match and odds (alternate): {match} - {odds}")
-                        
-                        if "stake" in current_bet:
-                            bets.append(dict(current_bet))
-                            current_bet = {}
+            feedback_label.config(text=f"No bets found. Text extracted:\n{preview}")
+            logging.warning("No bets found in screenshot. Extracted text: " + text)
+            return None
             
-            if bets:
-                logging.info(f"Successfully extracted {len(bets)} bets (alternate format): {bets}")
-                feedback_label.config(text=f"Found {len(bets)} bets:\n" + 
-                    "\n".join([f"{b['match']} ({b['odds']}) - €{b['stake']:.2f}" for b in bets]))
-                return bets
-            else:
-                feedback_label.config(text=f"No bets found. Text extracted:\n{preview}")
-                logging.warning("No bets found in screenshot. Extracted text: " + text)
-                return None
     except Exception as e:
         feedback_label.config(text=f"Error processing image: {str(e)}\nExtracted text preview:\n{text[:200]}")
         logging.error(f"Error in extract_bet_info: {e}")
@@ -313,6 +307,7 @@ def show_main_page():
     br_frame.pack(pady=10, fill="x")
     upload_frame.pack(pady=10)
     history_frame.pack(pady=10, fill="both", expand=True)
+    data_frame.pack(pady=5, fill="x")
     button_frame.pack(pady=10)
 
 def update_stats_display(period=None):
@@ -335,14 +330,16 @@ def update_stats_display(period=None):
     history['Date'] = pd.to_datetime(history['Date'], format='%d.%m.%Y')
     
     # Filter data based on period
-    if period:
-        current_date = pd.Timestamp.now()
-        if period == 'week':
-            filtered_history = history[history['Date'] >= current_date - pd.Timedelta(days=7)]
-            period_text = "Last 7 Days"
-        elif period == 'month':
-            filtered_history = history[history['Date'] >= current_date - pd.Timedelta(days=30)]
-            period_text = "Last 30 Days"
+    current_date = pd.Timestamp.now()
+    if period == 'day':
+        filtered_history = history[history['Date'].dt.date == current_date.date()]
+        period_text = "Today's Bets"
+    elif period == 'week':
+        filtered_history = history[history['Date'] >= current_date - pd.Timedelta(days=7)]
+        period_text = "Last 7 Days"
+    elif period == 'month':
+        filtered_history = history[history['Date'] >= current_date - pd.Timedelta(days=30)]
+        period_text = "Last 30 Days"
     else:
         filtered_history = history
         period_text = "All Time"
@@ -351,94 +348,114 @@ def update_stats_display(period=None):
     period_frame = tk.Frame(stats_frame, bg="#2E3B55", padx=20, pady=10)
     period_frame.pack(fill="x", pady=(0, 20))
     
-    tk.Label(period_frame, text="Select Period:", font=("Helvetica", 12, "bold"),
-             fg="#00B4D8", bg="#2E3B55").pack(side="left", padx=(0,10))
+    tk.Label(period_frame, text=f"Statistics - {period_text}", 
+             font=("Helvetica", 14, "bold"),
+             fg="#00B4D8", bg="#2E3B55").pack(pady=10)
     
-    periods = [("All Time", None), ("Last 7 Days", "week"), ("Last 30 Days", "month")]
-    for text, value in periods:
-        btn = tk.Button(period_frame, text=text, 
-                       bg="#4CAF50" if value == period else "#607D8B",
-                       fg="white",
-                       command=lambda v=value: update_stats_display(v))
-        btn.pack(side="left", padx=5)
-    
-    # Calculate and display stats (same calculations as before)
+    # Calculate stats
     total_bets = len(filtered_history)
     completed_bets = len(filtered_history[filtered_history["Result"] != "Pending"])
     wins = len(filtered_history[filtered_history["Result"] == "Win"])
+    losses = len(filtered_history[filtered_history["Result"] == "Loss"])
+    pending = len(filtered_history[filtered_history["Result"] == "Pending"])
+    
     win_rate = (wins / completed_bets * 100) if completed_bets > 0 else 0
-    roi = ((filtered_history["Payout"].sum() - filtered_history["Stake"].sum()) / 
-           filtered_history["Stake"].sum()) * 100 if filtered_history["Stake"].sum() > 0 else 0
-    avg_odds = filtered_history["Odds"].mean()
-    total_profit = filtered_history["Payout"].sum() - filtered_history["Stake"].sum()
+    total_stake = filtered_history["Stake"].sum()
+    total_payout = filtered_history["Payout"].sum()
+    total_profit = total_payout - total_stake
+    roi = (total_profit / total_stake * 100) if total_stake > 0 else 0
     
-    # Create scrollable frame for stats content
-    canvas = tk.Canvas(stats_frame, bg="#1A2238", highlightthickness=0)
-    scrollbar = ttk.Scrollbar(stats_frame, orient="vertical", command=canvas.yview)
-    scrollable_frame = tk.Frame(canvas, bg="#1A2238")
-    
-    scrollable_frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
-    
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=780)  # Made wider
-    canvas.configure(yscrollcommand=scrollbar.set)
-    
-    # Add stats sections (same as before)
+    # Create stats sections
     sections = [
-        ("Overall Performance", [
+        ("Summary", [
+            f"Period: {period_text}",
             f"Total Bets: {total_bets}",
-            f"Completed Bets: {completed_bets}",
+            f"Completed: {completed_bets}",
+            f"Pending: {pending}"
+        ]),
+        ("Performance", [
+            f"Wins: {wins}",
+            f"Losses: {losses}",
             f"Win Rate: {win_rate:.1f}%",
-            f"ROI: {roi:.1f}%",
-            f"Total Profit: €{total_profit:.2f}",
-            f"Average Odds: {avg_odds:.2f}"
+            f"ROI: {roi:.1f}%"
+        ]),
+        ("Financial", [
+            f"Total Stake: €{total_stake:.2f}",
+            f"Total Payout: €{total_payout:.2f}",
+            f"Net Profit: €{total_profit:.2f}"
         ])
     ]
     
-    # Add sections to scrollable frame
-    for title, stats in sections:
-        section_frame = tk.Frame(scrollable_frame, bg="#2E3B55", padx=20, pady=15)
-        section_frame.pack(fill="x", pady=10)
+    # Add daily breakdown if viewing week or month
+    if period in ['week', 'month']:
+        daily_stats = filtered_history.groupby(filtered_history['Date'].dt.date).agg({
+            'Stake': 'sum',
+            'Payout': 'sum',
+            'Result': lambda x: sum(x == 'Win')
+        }).reset_index()
+        daily_stats['Profit'] = daily_stats['Payout'] - daily_stats['Stake']
         
-        tk.Label(section_frame, text=title, font=("Helvetica", 14, "bold"),
+        daily_breakdown = ["Daily Breakdown:"]
+        for _, row in daily_stats.iterrows():
+            date_str = row['Date'].strftime('%d/%m/%Y')
+            daily_breakdown.append(
+                f"  • {date_str}: €{row['Profit']:.2f} ({row['Result']} wins)"
+            )
+        sections.append(("Daily Performance", daily_breakdown))
+    
+    # Display sections
+    for title, stats in sections:
+        section_frame = tk.Frame(stats_frame, bg="#2E3B55", padx=20, pady=15)
+        section_frame.pack(fill="x", pady=10, padx=20)
+        
+        tk.Label(section_frame, text=title, font=("Helvetica", 12, "bold"),
                 fg="#00B4D8", bg="#2E3B55").pack(anchor="w", pady=(0, 10))
         
         for stat in stats:
-            tk.Label(section_frame, text=stat, font=("Helvetica", 12),
+            tk.Label(section_frame, text=stat, font=("Helvetica", 11),
                     fg="#D3D3D3", bg="#2E3B55").pack(anchor="w", pady=2)
-    
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
 
 def update_history_table():
     for item in tree.get_children():
         tree.delete(item)
     
-    # Configure tag for pending rows
-    tree.tag_configure('pending', background='#1E2B45')
+    # Configure tags for different row states
+    tree.tag_configure('pending', background='#2C3E50', foreground='#FFC107')  # Pending bets in amber
+    tree.tag_configure('win', background='#1B5E20', foreground='#FFFFFF')      # Wins in green
+    tree.tag_configure('loss', background='#7F1D1D', foreground='#FFFFFF')     # Losses in red
+    tree.tag_configure('striped', background='#1E2B45')                        # Striped rows
     
-    for _, row in history.iterrows():
-        # For pending bets, show action buttons in the Actions column
+    for idx, row in history.iterrows():
+        # Determine row tags
+        tags = []
         if row["Result"] == "Pending":
-            item = tree.insert("", "end", values=(
-                row["Match"], 
-                row["Odds"], 
-                f"{row['Stake']:.2f}", 
-                "Pending",
-                f"{row['Payout']:.2f}",
-                "✓ Win | ✗ Lose"  # Visual indicators in the Actions column
-            ), tags=('pending',))
+            tags.append('pending')
+        elif row["Result"] == "Win":
+            tags.append('win')
+        elif row["Result"] == "Loss":
+            tags.append('loss')
+        
+        # Add striped effect for even rows
+        if idx % 2 == 0:
+            tags.append('striped')
+        
+        # Format payout with color indicators
+        if row["Result"] == "Win":
+            payout_str = f"+€{row['Payout']:.2f}"
+        elif row["Result"] == "Loss":
+            payout_str = f"-€{row['Stake']:.2f}"
         else:
-            item = tree.insert("", "end", values=(
-                row["Match"], 
-                row["Odds"], 
-                f"{row['Stake']:.2f}", 
-                row["Result"],
-                f"{row['Payout']:.2f}",
-                ""  # Empty actions for completed bets
-            ))
+            payout_str = f"€{row['Payout']:.2f}"
+        
+        # Insert row with appropriate tags
+        item = tree.insert("", "end", values=(
+            row["Match"],
+            f"{row['Odds']:.2f}",
+            f"€{row['Stake']:.2f}",
+            row["Result"],
+            payout_str,
+            "✓ Win | ✗ Lose" if row["Result"] == "Pending" else ""
+        ), tags=tags)
 
 # GUI Setup
 root = TkinterDnD.Tk()
@@ -455,8 +472,32 @@ history = load_history()
 style = ttk.Style()
 style.configure("TButton", font=("Helvetica", 12), padding=5)
 style.configure("TLabel", font=("Helvetica", 14), background="#1A2238", foreground="#D3D3D3")
-style.configure("Treeview", font=("Helvetica", 10), background="#2E3B55", foreground="#D3D3D3", fieldbackground="#2E3B55")
-style.configure("Treeview.Heading", font=("Helvetica", 12, "bold"), background="#2E3B55", foreground="#D3D3D3")
+
+# Configure custom style for feedback label
+style.configure("Feedback.TLabel",
+                font=("Helvetica", 12),
+                background="#1E2B45",  # Darker background
+                foreground="#FFCA28",  # Amber text
+                padding=(10, 10))      # Add some padding
+
+# Configure Treeview colors and fonts
+style.configure("Treeview",
+                font=("Helvetica", 10),
+                background="#2E3B55",
+                foreground="#FFFFFF",
+                fieldbackground="#2E3B55",
+                rowheight=30)  # Increased row height
+
+style.configure("Treeview.Heading",
+                font=("Helvetica", 11, "bold"),
+                background="#1E2B45",
+                foreground="#00B4D8",
+                padding=(10, 5))  # Added padding to headers
+
+# Configure tags for different bet states
+style.map('Treeview',
+          background=[('selected', '#3D4B6A')],  # Darker blue when selected
+          foreground=[('selected', '#FFFFFF')])
 
 # Create all frames
 br_frame = tk.Frame(root, bg="#1A2238")
@@ -474,38 +515,61 @@ tk.Button(br_frame, text="-€50", bg="#F44336", fg="white", command=lambda: adj
 tk.Button(br_frame, text="Reset", bg="#607D8B", fg="white", command=lambda: adjust_bankroll(200 - bankroll)).grid(row=1, column=2, padx=5)
 
 # File Upload Area
-upload_label = ttk.Label(upload_frame, text="Drag Screenshot Here (Bet or Result)", foreground="#D3D3D3", font=("Helvetica", 12))
+upload_label = ttk.Label(upload_frame, text="Drag Screenshot Here (Bet or Result)", 
+                        foreground="#D3D3D3", font=("Helvetica", 12))
 upload_label.pack(pady=10)
-drop_area = tk.Label(upload_frame, text="Drop Zone", bg="#1E2B45", fg="#D3D3D3", width=50, height=8, relief="sunken", font=("Helvetica", 10))
-drop_area.pack(pady=10)
+
+# Drop area with dark theme
+drop_area = tk.Label(upload_frame, 
+                    text="Drop Zone", 
+                    bg="#1A2238",  # Dark background matching the theme
+                    fg="#D3D3D3",  # Light gray text
+                    width=50, 
+                    height=8, 
+                    relief="solid",  # Solid border instead of sunken
+                    borderwidth=2,   # Border width
+                    font=("Helvetica", 10))
+drop_area.pack(pady=10, padx=20)
 
 # Setup drag-and-drop
 drop_area.drop_target_register(DND_FILES)
 drop_area.dnd_bind('<<Drop>>', on_drop)
 
-# Feedback Label
-feedback_label = ttk.Label(upload_frame, text="", foreground="#FFCA28")
-feedback_label.pack(pady=5)
+# Create a frame for the feedback area with dark background
+feedback_frame = tk.Frame(upload_frame, bg="#1E2B45", relief="solid", borderwidth=1)
+feedback_frame.pack(pady=5, padx=20, fill="x")
+
+# Feedback Label with dark background
+feedback_label = ttk.Label(feedback_frame, 
+                          text="", 
+                          style="Feedback.TLabel",
+                          wraplength=600)  # Allow text to wrap
+feedback_label.pack(pady=10, padx=10, fill="x")
 
 # History Table
-tree = ttk.Treeview(history_frame, columns=("Match", "Odds", "Stake", "Result", "Payout", "Actions"), 
-                    show="headings", height=15)
+tree = ttk.Treeview(history_frame, 
+                    columns=("Match", "Odds", "Stake", "Result", "Payout", "Actions"),
+                    show="headings",
+                    height=15)
+
+# Configure columns
 tree.heading("Match", text="Match")
 tree.heading("Odds", text="Odds")
-tree.heading("Stake", text="Stake (€)")
+tree.heading("Stake", text="Stake")
 tree.heading("Result", text="Result")
-tree.heading("Payout", text="Payout (€)")
+tree.heading("Payout", text="Payout")
 tree.heading("Actions", text="Actions")
 
-# Configure column widths
-tree.column("Match", width=200)
-tree.column("Odds", width=70)
-tree.column("Stake", width=80)
-tree.column("Result", width=80)
-tree.column("Payout", width=80)
-tree.column("Actions", width=120)
+# Configure column widths and alignment
+tree.column("Match", width=250, anchor="w")  # Left align, wider for match names
+tree.column("Odds", width=70, anchor="center")
+tree.column("Stake", width=80, anchor="center")
+tree.column("Result", width=80, anchor="center")
+tree.column("Payout", width=100, anchor="center")
+tree.column("Actions", width=120, anchor="center")
 
-tree.pack(fill="both", expand=True, padx=10)
+# Add some padding around the tree
+tree.pack(fill="both", expand=True, padx=20, pady=10)
 
 # Define tree-related functions after tree creation
 def on_tree_click(event):
@@ -529,34 +593,6 @@ def on_tree_click(event):
 tree.bind('<Button-1>', on_tree_click)
 tree.bind("<Button-3>", show_context_menu)
 
-def update_history_table():
-    for item in tree.get_children():
-        tree.delete(item)
-    
-    # Configure tag for pending rows
-    tree.tag_configure('pending', background='#1E2B45')
-    
-    for _, row in history.iterrows():
-        # For pending bets, show action buttons in the Actions column
-        if row["Result"] == "Pending":
-            item = tree.insert("", "end", values=(
-                row["Match"], 
-                row["Odds"], 
-                f"{row['Stake']:.2f}", 
-                "Pending",
-                f"{row['Payout']:.2f}",
-                "✓ Win | ✗ Lose"  # Visual indicators in the Actions column
-            ), tags=('pending',))
-        else:
-            item = tree.insert("", "end", values=(
-                row["Match"], 
-                row["Odds"], 
-                f"{row['Stake']:.2f}", 
-                row["Result"],
-                f"{row['Payout']:.2f}",
-                ""  # Empty actions for completed bets
-            ))
-
 # Buttons Frame
 ttk.Button(button_frame, text="View Stats", command=show_stats_page).pack(side="left", padx=10)
 ttk.Button(button_frame, text="Weekly Stats", 
@@ -566,6 +602,43 @@ ttk.Button(button_frame, text="Monthly Stats",
 ttk.Button(button_frame, text="Browse File", 
           command=lambda: process_file(filedialog.askopenfilename(
               filetypes=[("Image files", "*.png *.jpg *.jpeg")]))).pack(side="left", padx=10)
+
+# Create data management frame
+data_frame = tk.Frame(root, bg="#1A2238")
+data_frame.pack(pady=5, fill="x")
+
+# Style for data buttons
+data_button_style = {
+    "font": ("Helvetica", 11),
+    "bg": "#2E3B55",
+    "fg": "white",
+    "width": 15,
+    "height": 1,
+    "relief": "flat",
+    "padx": 10
+}
+
+# Data management buttons
+tk.Label(data_frame, 
+        text="Data Analysis:", 
+        font=("Helvetica", 12, "bold"),
+        bg="#1A2238",
+        fg="#00B4D8").pack(side="left", padx=20)
+
+tk.Button(data_frame,
+         text="Daily Overview",
+         command=lambda: (show_stats_page(), update_stats_display('day')),
+         **data_button_style).pack(side="left", padx=5)
+
+tk.Button(data_frame,
+         text="Weekly Analysis",
+         command=lambda: (show_stats_page(), update_stats_display('week')),
+         **data_button_style).pack(side="left", padx=5)
+
+tk.Button(data_frame,
+         text="Monthly Report",
+         command=lambda: (show_stats_page(), update_stats_display('month')),
+         **data_button_style).pack(side="left", padx=5)
 
 # Show initial page
 show_main_page()

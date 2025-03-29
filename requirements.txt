@@ -1,0 +1,4 @@
+pytesseract==0.3.10
+Pillow==10.2.0
+pandas==2.2.1
+tkinterdnd2==0.3.0 

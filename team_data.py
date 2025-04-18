@@ -1,8 +1,10 @@
+from difflib import SequenceMatcher
+
 # European Soccer Teams by League
 TEAMS = {
     "Premier League": [
         "Arsenal", "Aston Villa", "Brighton", "Burnley", "Chelsea", "Crystal Palace",
-        "Everton", "Leeds", "Leicester", "Liverpool", "Manchester City", "Manchester United",
+        "Everton", "Leeds", "Leicester", "Liverpool", "Manchester City", "Man Utd",
         "Newcastle", "Norwich", "Southampton", "Tottenham", "Watford", "West Ham", "Wolves"
     ],
     "La Liga": [
@@ -18,7 +20,7 @@ TEAMS = {
     ],
     "Serie A": [
         "Atalanta", "Bologna", "Cagliari", "Empoli", "Fiorentina", "Genoa",
-        "Inter", "Juventus", "Lazio", "Milan", "Napoli", "Roma", "Salernitana",
+        "Inter Milan", "Juventus", "Lazio", "Milan", "Napoli", "Roma", "Salernitana",
         "Sampdoria", "Sassuolo", "Spezia", "Torino", "Udinese", "Venezia", "Verona"
     ],
     "Ligue 1": [
@@ -82,19 +84,67 @@ TEAMS = {
     "Ukrainian Premier League": [
         "Dynamo Kyiv", "Dnipro-1", "Kolos Kovalivka", "Metalist 1925", "Oleksandriya",
         "Rukh Lviv", "Shakhtar Donetsk", "Vorskla", "Zorya Luhansk"
+    ],
+    "Croatian First Football League": [
+        "NK Lokomotiva Zagreb", "Slaven Belupo", "NK Varaždin", "Hajduk Split"
+    ],
+    "EFL League One (England, 3rd tier)": [
+        "Exeter", "Burton Albion"
+    ],
+    "Ligue 2 (France, 2nd tier)": [
+        "Laval", "Rodez", "Amiens", "Guingamp"
+    ],
+    "TFF First League (Turkey, 2nd tier)": [
+        "Manisa FK", "Ankaragücü"
+    ],
+    "Eerste Divisie (Netherlands, 2nd tier)": [
+        "FC Eindhoven", "Telstar"
+    ],
+    "Meistriliiga (Estonia, 1st tier)": [
+        "Harju JK Laagri", "JK Tammeka Tartu"
+    ],
+    "Liga Portugal 2 (Portugal, 2nd tier)": [
+        "Rio Ave", "Santa Clara"
+    ],
+    "EFL Championship (England, 2nd tier)": [
+        "Swansea", "Hull"
+    ],
+    "La Liga 2 (Spain, 2nd tier)": [
+        "Espanyol", "Getafe"
+    ],
+    "League of Ireland Premier Division": [
+        "Drogheda United", "Shelbourne"
     ]
 }
 
-def get_team_league(team_name):
-    """Find which league a team belongs to."""
-    for league, teams in TEAMS.items():
-        if team_name in teams:
-            return league
-    return "Other"
+# Precompute a flat list for faster fuzzy matching lookup
+ALL_TEAMS_FLAT = [(team, league) for league, teams in TEAMS.items() for team in teams]
+
+def get_team_league(team_name, threshold=0.85):
+    """Find which league a team belongs to using fuzzy matching."""
+    if not team_name or not isinstance(team_name, str):
+        return "Other" # Handle invalid input
+
+    best_match = None
+    highest_score = threshold # Start with the minimum required similarity
+
+    # Iterate through the precomputed list of (team, league) tuples
+    for known_team, league in ALL_TEAMS_FLAT:
+        # Calculate similarity ratio
+        score = SequenceMatcher(None, team_name.lower(), known_team.lower()).ratio()
+        
+        # If this score is better than the current best (and above threshold)
+        if score > highest_score:
+            highest_score = score
+            best_match = league
+
+    # Return the best match found, or "Other" if no match exceeded the threshold
+    return best_match if best_match else "Other"
 
 def get_all_teams():
     """Get a flat list of all teams."""
-    return [team for teams in TEAMS.values() for team in teams]
+    # Use the precomputed list
+    return [team for team, league in ALL_TEAMS_FLAT]
 
 def get_league_teams(league):
     """Get all teams in a specific league."""

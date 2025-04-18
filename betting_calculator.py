@@ -395,16 +395,22 @@ def process_file(file_path):
                                          (base_timestamp + timedelta(milliseconds=i*10)).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]) # Add ms
 
             # --- Clean the extracted match name --- 
-            # Remove " or Draw" suffix if present
-            # ... (cleaning logic remains the same) ...
             match_name_cleaned = match_name_raw
-            if isinstance(match_name_raw, str) and match_name_raw.endswith(" or Draw"):
-                 try:
-                      match_name_cleaned = match_name_raw.removesuffix(" or Draw")
-                      logging.debug(f"Removed ' or Draw' suffix from '{match_name_raw}' -> '{match_name_cleaned}'")
-                 except AttributeError:
-                      match_name_cleaned = match_name_raw.replace(" or Draw", "")
-                      logging.debug(f"Replaced ' or Draw' in '{match_name_raw}' -> '{match_name_cleaned}' (using replace)")
+            if isinstance(match_name_raw, str):
+                # 1. Remove common prefixes (case-insensitive)
+                prefixes_to_remove = [r'^o\s+', r'^\.\s+', r'^Draw\s+or\s+'] # Add more prefixes if needed
+                for prefix_pattern in prefixes_to_remove:
+                     match_name_cleaned = re.sub(prefix_pattern, '', match_name_cleaned, flags=re.IGNORECASE).strip()
+                     if match_name_cleaned != match_name_raw:
+                          logging.debug(f"Removed prefix '{prefix_pattern}' from '{match_name_raw}' -> '{match_name_cleaned}'")
+                          match_name_raw = match_name_cleaned # Update for next potential prefix removal
+                
+                # 2. Remove " or Draw" suffix (case-insensitive)
+                suffix_pattern = r'\s+or\s+Draw$'
+                original_name = match_name_cleaned # Store before suffix removal
+                match_name_cleaned = re.sub(suffix_pattern, '', match_name_cleaned, flags=re.IGNORECASE).strip()
+                if match_name_cleaned != original_name:
+                    logging.debug(f"Removed ' or Draw' suffix from '{original_name}' -> '{match_name_cleaned}'")
             # --- End Cleaning ---
 
             # Decision logic (Add vs Update) - Use the cleaned name and new timestamp
@@ -509,8 +515,9 @@ def update_history_table(filtered_df=None):
     # --- End Daily Filter ---
 
     # --- Safely create Date_dt for sorting (if not already created/present) --- 
-    sort_columns = ['League', 'Match'] # Default sort columns
-    sort_ascending = [True, True]
+    # Sort ONLY by Date_dt (descending) to preserve screenshot order
+    sort_columns = [] 
+    sort_ascending = []
     
     if 'Date' in display_df.columns:
         try:
@@ -526,24 +533,25 @@ def update_history_table(filtered_df=None):
             # Check if *any* dates were successfully parsed
             if not date_dt_col.isnull().all():
                 display_df['Date_dt'] = date_dt_col
-                # Prioritize sorting by date (most recent first)
-                sort_columns.insert(0, 'Date_dt') 
-                sort_ascending.insert(0, False) 
-                logging.debug("Sorting history table by Date_dt (desc), League, Match.")
+                # Sort ONLY by date (most recent first)
+                sort_columns = ['Date_dt'] 
+                sort_ascending = [False] 
+                logging.debug("Sorting history table primarily by Date_dt (desc) to preserve screenshot order.")
             else:
-                 logging.warning("Could not parse any dates in 'Date' column for sorting. Sorting by League/Match.")
+                 logging.warning("Could not parse any dates in 'Date' column for sorting. Order might be unpredictable.")
         except Exception as e:
-            logging.warning(f"Error processing 'Date' column for sorting: {e}. Sorting by League/Match.")
+            logging.warning(f"Error processing 'Date' column for sorting: {e}. Order might be unpredictable.")
     else:
-        logging.debug("No 'Date' column found for sorting. Sorting by League/Match.")
+        logging.warning("No 'Date' column found for sorting. Order might be unpredictable.")
         
-    # Sort the DataFrame based on the determined columns
+    # Sort the DataFrame based ONLY on Date_dt if available
     try:
-        display_df = display_df.sort_values(by=sort_columns, ascending=sort_ascending)
-    except KeyError as ke:
-        # Fallback if even League/Match columns are somehow missing
-        logging.error(f"Sorting failed, missing key column: {ke}")
-        # Don't sort if essential columns missing
+        if sort_columns: # Only sort if we have a valid date column
+            display_df = display_df.sort_values(by=sort_columns, ascending=sort_ascending)
+        else:
+            # If no date column, maybe sort by index to retain add order? Risky.
+            # For now, leave unsorted if no date.
+            logging.warning("Displaying history potentially unsorted due to missing/unparsable Date column.")
     except Exception as e:
         logging.error(f"Unexpected error during sorting: {e}")
 
@@ -599,16 +607,26 @@ def update_history_table(filtered_df=None):
             league,
             odds_str,
             stake_str,
-            result,
+            result, # This is the base result string
             payout_str,
             display_date, # Use formatted or original date string
             action_text,  
             delete_symbol 
-        ), tags=tuple(tags)) 
+        ), tags=tuple(tags)) # Apply initial tags (win/loss/pending)
 
         # Apply striping based on tree index 
+        # Determine the base tag (win, loss, or pending) to re-apply
+        status_tag = tags[0] if tags else 'pending' 
+        final_tags = list(tags)
         if tree.index(item_id) % 2 == 1:
-             tree.item(item_id, tags=tags + ['striped'])
+             final_tags.append('striped')
+             # Apply striped tag first
+             tree.item(item_id, tags=tuple(final_tags)) 
+        # Ensure the status tag (which controls color) is the primary visual cue if needed
+        # Re-applying isn't strictly necessary if style precedence is correct, 
+        # but explicitly setting it after potential striping can sometimes help.
+        # Let's rely on the style configuration first. If colors still fail,
+        # we might need: tree.item(item_id, tags=tuple(final_tags)) # Re-apply all tags
 
 # --- Treeview Action Functions ---
 # Define these before they are bound to the treeview
@@ -1041,11 +1059,11 @@ def update_stats_display(period='all'):
     # Define row weights - give row 5 (league_tree_frame) the weight to expand vertically
     stats_content_frame.grid_rowconfigure(5, weight=1)
 
-    # Use a consistent font and padding for stats labels
+    # Use a consistent font and padding for stats labels - Adjusted padding again
     stat_font = ("Segoe UI", 11)
-    label_padding = {'pady': 2, 'padx': (10, 2)} 
-    value_padding = {'pady': 2, 'padx': (2, 10)}
-    profit_color = "#81C784" if total_profit >= 0 else "#E57373" # Green for profit, red for loss
+    label_padding = {'pady': 2, 'padx': (10, 5)} # Pad right of label
+    value_padding = {'pady': 2, 'padx': (5, 10)} # Pad left of value
+    profit_color = "#81C784" if total_profit >= 0 else "#E57373"
 
     # Grid Placement within stats_content_frame
     row_index = 0
@@ -1057,79 +1075,71 @@ def update_stats_display(period='all'):
     overall_title_label.grid(row=row_index, column=0, pady=(10, 15), sticky="n")
     row_index += 1
 
-    # --- Summary Stats Frame (Wins/Losses/Pending) ---
+    # --- Summary Stats Frame (Wins/Losses/Pending) --- Simplified to 2 columns ---
     summary_frame = tk.Frame(stats_content_frame, bg="#313131")
     summary_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=5)
-    # Adjust column configuration for tighter spacing
-    summary_frame.grid_columnconfigure(0, weight=1) # Left space
-    summary_frame.grid_columnconfigure(1, weight=0) # Label column
-    summary_frame.grid_columnconfigure(2, weight=0) # Space between label/value (minimal)
-    summary_frame.grid_columnconfigure(3, weight=0) # Value column
-    summary_frame.grid_columnconfigure(4, weight=1) # Right space
+    summary_frame.grid_columnconfigure(0, weight=1) # Label column takes weight for alignment
+    summary_frame.grid_columnconfigure(1, weight=1) # Value column takes weight
     
-    # Apply new padding and ensure sticky options
-    ttk.Label(summary_frame, text="Total Bets:", font=stat_font, anchor="e").grid(row=0, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{total_bets}", font=stat_font, anchor="w").grid(row=0, column=3, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Completed:", font=stat_font, anchor="e").grid(row=1, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{completed_bets_count}", font=stat_font, anchor="w").grid(row=1, column=3, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Pending:", font=stat_font, anchor="e").grid(row=2, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{pending}", font=stat_font, anchor="w").grid(row=2, column=3, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Wins:", font=stat_font, anchor="e").grid(row=3, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{wins}", font=stat_font, anchor="w", foreground="#81C784").grid(row=3, column=3, sticky="w", **value_padding) # Green
-    ttk.Label(summary_frame, text="Losses:", font=stat_font, anchor="e").grid(row=4, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{losses}", font=stat_font, anchor="w", foreground="#E57373").grid(row=4, column=3, sticky="w", **value_padding) # Red
-    ttk.Label(summary_frame, text="Win Rate:", font=stat_font, anchor="e").grid(row=5, column=1, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{win_rate:.1f}%", font=stat_font, anchor="w").grid(row=5, column=3, sticky="w", **value_padding)
+    # Place labels in col 0 (sticky e), values in col 1 (sticky w)
+    ttk.Label(summary_frame, text="Total Bets:", font=stat_font, anchor="e").grid(row=0, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{total_bets}", font=stat_font, anchor="w").grid(row=0, column=1, sticky="w", **value_padding)
+    ttk.Label(summary_frame, text="Completed:", font=stat_font, anchor="e").grid(row=1, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{completed_bets_count}", font=stat_font, anchor="w").grid(row=1, column=1, sticky="w", **value_padding)
+    ttk.Label(summary_frame, text="Pending:", font=stat_font, anchor="e").grid(row=2, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{pending}", font=stat_font, anchor="w").grid(row=2, column=1, sticky="w", **value_padding)
+    ttk.Label(summary_frame, text="Wins:", font=stat_font, anchor="e").grid(row=3, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{wins}", font=stat_font, anchor="w", foreground="#81C784").grid(row=3, column=1, sticky="w", **value_padding)
+    ttk.Label(summary_frame, text="Losses:", font=stat_font, anchor="e").grid(row=4, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{losses}", font=stat_font, anchor="w", foreground="#E57373").grid(row=4, column=1, sticky="w", **value_padding)
+    ttk.Label(summary_frame, text="Win Rate:", font=stat_font, anchor="e").grid(row=5, column=0, sticky="e", **label_padding)
+    ttk.Label(summary_frame, text=f"{win_rate:.1f}%", font=stat_font, anchor="w").grid(row=5, column=1, sticky="w", **value_padding)
     row_index += 1
 
-    # --- Financial Stats Frame (Stake/Profit/ROI) ---
+    # --- Financial Stats Frame (Stake/Profit/ROI) --- Simplified to 2 columns ---
     financial_frame = tk.Frame(stats_content_frame, bg="#313131")
     financial_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=10)
-    # Adjust column configuration for tighter spacing
-    financial_frame.grid_columnconfigure((0, 4), weight=1) # Side spaces
-    financial_frame.grid_columnconfigure((1, 2, 3), weight=0) # Content columns minimal weight
+    financial_frame.grid_columnconfigure(0, weight=1) # Label column
+    financial_frame.grid_columnconfigure(1, weight=1) # Value column
     
-    # Apply new padding and ensure sticky options
-    ttk.Label(financial_frame, text="Total Stake:", font=stat_font, anchor="e").grid(row=0, column=1, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"€{total_stake:.2f}", font=stat_font, anchor="w").grid(row=0, column=3, sticky="w", **value_padding)
-    ttk.Label(financial_frame, text="Total Profit:", font=stat_font, anchor="e").grid(row=1, column=1, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"€{total_profit:+.2f}", font=stat_font, anchor="w", foreground=profit_color).grid(row=1, column=3, sticky="w", **value_padding) # Dynamic color
-    ttk.Label(financial_frame, text="ROI:", font=stat_font, anchor="e").grid(row=2, column=1, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"{roi:.1f}%", font=stat_font, anchor="w", foreground=profit_color).grid(row=2, column=3, sticky="w", **value_padding) # Dynamic color
+    ttk.Label(financial_frame, text="Total Stake:", font=stat_font, anchor="e").grid(row=0, column=0, sticky="e", **label_padding)
+    ttk.Label(financial_frame, text=f"€{total_stake:.2f}", font=stat_font, anchor="w").grid(row=0, column=1, sticky="w", **value_padding)
+    ttk.Label(financial_frame, text="Total Profit:", font=stat_font, anchor="e").grid(row=1, column=0, sticky="e", **label_padding)
+    ttk.Label(financial_frame, text=f"€{total_profit:+.2f}", font=stat_font, anchor="w", foreground=profit_color).grid(row=1, column=1, sticky="w", **value_padding)
+    ttk.Label(financial_frame, text="ROI:", font=stat_font, anchor="e").grid(row=2, column=0, sticky="e", **label_padding)
+    ttk.Label(financial_frame, text=f"{roi:.1f}%", font=stat_font, anchor="w", foreground=profit_color).grid(row=2, column=1, sticky="w", **value_padding)
     row_index += 1 
 
-    # --- Advanced Overall Stats Frame ---
+    # --- Advanced Overall Stats Frame --- Simplified to 2 columns ---
     adv_overall_frame = tk.Frame(stats_content_frame, bg="#313131")
     adv_overall_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=5)
-    # Adjust column configuration for tighter spacing
-    adv_overall_frame.grid_columnconfigure((0, 4), weight=1) # Side spaces
-    adv_overall_frame.grid_columnconfigure((1, 2, 3), weight=0) # Content columns minimal weight
+    adv_overall_frame.grid_columnconfigure(0, weight=1) # Label column
+    adv_overall_frame.grid_columnconfigure(1, weight=1) # Value column
     adv_row = 0
 
-    # Apply new padding and ensure sticky options
-    ttk.Label(adv_overall_frame, text="Avg Stake:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{avg_stake:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Avg Stake:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"€{avg_stake:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Avg Odds (Placed):", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{avg_odds_placed:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Avg Odds (Placed):", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"{avg_odds_placed:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Biggest Win:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{biggest_win:+.2f}", font=stat_font, anchor="w", foreground="#81C784").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Biggest Win:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"€{biggest_win:+.2f}", font=stat_font, anchor="w", foreground="#81C784").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Biggest Loss:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{biggest_loss:.2f}", font=stat_font, anchor="w", foreground="#E57373").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Biggest Loss:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"€{biggest_loss:.2f}", font=stat_font, anchor="w", foreground="#E57373").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Longest Win Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{longest_win_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Longest Win Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"{longest_win_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Longest Loss Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{longest_loss_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Longest Loss Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"{longest_loss_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
-    ttk.Label(adv_overall_frame, text="Profit Std Dev:", font=stat_font, anchor="e").grid(row=adv_row, column=1, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{profit_std_dev:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=3, sticky="w", **value_padding)
+    ttk.Label(adv_overall_frame, text="Profit Std Dev:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
+    ttk.Label(adv_overall_frame, text=f"€{profit_std_dev:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
     adv_row += 1
 
-    row_index += 1 # Increment main row index after this frame
+    row_index += 1
 
     # --- Per-League Statistics Calculation ---
     league_stats = [] # Initialize list to store results
@@ -1434,12 +1444,12 @@ style.map('Treeview',
           foreground=[('selected', '#FFFFFF')])
 
 # --- Tag configurations for Treeview rows (Win/Loss/Pending) ---
-# Use background colors for better visual distinction
-style.configure("win.Treeview", background="#2E7D32", foreground="#FFFFFF") # Darker Green background, White text
-style.configure("loss.Treeview", background="#C62828", foreground="#FFFFFF") # Darker Red background, White text
-# Pending and striped can keep the default background or a subtle variation
-style.configure("pending.Treeview", background="#313131", foreground="#E0E0E0") 
-style.configure("striped.Treeview", background="#3A3A3A") # Slightly lighter stripe
+# Use foreground colors for subtle visual distinction
+style.configure("win.Treeview", foreground="#81C784") # Green text for win
+style.configure("loss.Treeview", foreground="#E57373") # Red text for loss
+# Backgrounds will be handled by default/striped styles
+style.configure("pending.Treeview", foreground="#E0E0E0") # Default text color
+style.configure("striped.Treeview", background="#3A3A3A") # Keep striped background subtle
 
 # Create all frames with the new dark background
 br_frame = tk.Frame(root, bg="#212121")

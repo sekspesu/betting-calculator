@@ -10,13 +10,19 @@ TEAMS = {
     "La Liga": [
         "Athletic Bilbao", "Atletico Madrid", "Barcelona", "Cadiz", "Celta Vigo",
         "Elche", "Espanyol", "Getafe", "Granada", "Levante", "Mallorca", "Osasuna",
-        "Real Betis", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Villarreal"
+        "Real Betis", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Villarreal",
+        "Valladolid"
     ],
     "Bundesliga": [
         "Augsburg", "Bayer Leverkusen", "Bayern Munich", "Bochum", "Borussia Dortmund",
         "Borussia Monchengladbach", "Eintracht Frankfurt", "Freiburg", "Greuther Furth",
         "Hertha Berlin", "Hoffenheim", "Koln", "Mainz", "RB Leipzig", "Stuttgart",
-        "Union Berlin", "Wolfsburg"
+        "Union Berlin", "Wolfsburg",
+        # Added based on user list:
+        "SC Freiburg", "TSG Hoffenheim", "Werder Bremen", "VfL Wolfsburg", "FC Augsburg",
+        "FC Köln", "VfL Bochum", "FSV Mainz 05", "SV Darmstadt 98"
+        # Note: Some names might be slight variations of existing ones (e.g., Koln/FC Köln, Hoffenheim/TSG Hoffenheim)
+        # Consider standardizing if fuzzy matching doesn't handle it well.
     ],
     "Serie A": [
         "Atalanta", "Bologna", "Cagliari", "Empoli", "Fiorentina", "Genoa",
@@ -26,17 +32,27 @@ TEAMS = {
     "Ligue 1": [
         "Angers", "Bordeaux", "Brest", "Clermont", "Lens", "Lille", "Lyon",
         "Marseille", "Metz", "Monaco", "Montpellier", "Nantes", "Nice", "Paris Saint-Germain",
-        "Reims", "Rennes", "Saint-Etienne", "Strasbourg", "Troyes"
+        "Reims", "Rennes", "Saint-Etienne", "Strasbourg", "Troyes",
+        # Added based on user list:
+        "OGC Nice", "Stade Rennais", "RC Lens", "Stade de Reims", "Montpellier HSC",
+        "FC Nantes", "Toulouse FC", "Clermont Foot", "FC Lorient", "Le Havre AC"
+        # Note: Potential variations/duplicates (Nice/OGC Nice, Rennes/Stade Rennais, etc.)
     ],
     "Eredivisie": [
         "Ajax", "AZ", "Cambuur", "Feyenoord", "Fortuna Sittard", "Go Ahead Eagles",
         "Groningen", "Heerenveen", "Heracles", "NEC", "PSV", "RKC Waalwijk", "Sparta Rotterdam",
-        "Twente", "Utrecht", "Vitesse", "Willem II"
+        "Twente", "Utrecht", "Vitesse", "Willem II",
+        # Added based on user list:
+        "Ajax Amsterdam", "AZ Alkmaar", "FC Twente", "SC Heerenveen", "FC Utrecht"
+        # Note: Potential variations/duplicates (Ajax/Ajax Amsterdam, AZ/AZ Alkmaar, etc.)
     ],
     "Primeira Liga": [
         "Arouca", "Benfica", "Boavista", "Braga", "Estoril", "Famalicao",
         "Gil Vicente", "Maritimo", "Moreirense", "Pacos de Ferreira", "Porto",
-        "Santa Clara", "Sporting", "Tondela", "Vitoria Guimaraes", "Vizela"
+        "Santa Clara", "Sporting", "Tondela", "Vitoria Guimaraes", "Vizela",
+        # Added based on user list:
+        "Sporting CP", "SC Braga", "Vitória SC", "FC Famalicão", "Gil Vicente FC"
+        # Note: Potential variations/duplicates (Sporting/Sporting CP, Braga/SC Braga, etc.)
     ],
     "Super Lig": [
         "Adana Demirspor", "Alanyaspor", "Antalyaspor", "Basaksehir", "Besiktas",
@@ -60,7 +76,7 @@ TEAMS = {
     ],
     "Swedish Allsvenskan": [
         "AIK", "Djurgarden", "Elfsborg", "Goteborg", "Hacken", "Halmstad",
-        "Hammarby", "IFK Norrkoping", "Kalmar", "Malmo", "Mjallby", "Sirius",
+        "Hammarby", "IFK Norrkoping", "Kalmar", "Malmo", "Malmö FF", "Mjallby", "Sirius",
         "Varberg", "Varnamo"
     ],
     "Greek Super League": [
@@ -114,6 +130,39 @@ TEAMS = {
     ],
     "League of Ireland Premier Division": [
         "Drogheda United", "Shelbourne"
+    ],
+    "Allsvenskan (Sweden)": [
+        # This seems redundant with "Swedish Allsvenskan". Merge if appropriate.
+        # Consider standardizing league names.
+        # "Malmö FF", "AIK" # Already added above potentially
+    ],
+    "Superettan (Sweden 2nd tier)": [
+        "Östers IF", "Halmstad", "Örebro SK", "Helsingborg"
+    ],
+    "UEFA Champions League (International)": [
+        "PSG", "Barcelona", "Borussia Dortmund", "Inter Milan", "Bayern Munich", 
+        "Real Madrid", "Arsenal", "Man Utd", "Lyon" # Note: Many teams already exist in national leagues.
+    ],
+    "Chinese Super League": [
+        "Beijing Guoan", "Wuhan Three Towns", "Changchun Yatai", "Shenzhen"
+    ],
+    "Campeonato Brasileiro Série B (Brazil)": [
+        "Vasco da Gama", "Ceara"
+    ],
+    "Liga MX (Mexico)": [
+        "Necaxa", "Juárez FC"
+    ],
+    "UEFA Europa League / International": [
+        # Consider combining UEFA leagues or clarifying naming
+        "Athletic Bilbao", "Rangers" 
+    ],
+    "UEFA Europa Conference League (International)": [
+        # Consider combining UEFA leagues or clarifying naming
+        "Chelsea", "Legia Warsaw"
+    ],
+    "UEFA Champions League / Friendly": [
+        # Consider standardizing Friendly representation
+        # "Man Utd", "Lyon" # Already added to UCL above
     ]
 }
 

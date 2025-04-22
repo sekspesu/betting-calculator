@@ -169,194 +169,203 @@ def adjust_bankroll(amount):
     feedback_label.config(text=f"Bankroll adjusted by €{amount:+.2f}")
     logging.info(f"Bankroll adjusted to €{bankroll:.2f}")
 
-def extract_bet_info(image_path):
-    """Extracts bet information from an image using OCR (English Format).
+# <<< NEW HELPER FUNCTION for Original Format >>>
+def _parse_format_original(lines):
+    """Parses bet information assuming the original site format."""
+    logging.info("Attempting parsing using Original Format rules...")
+    bets = []
+    i = 0
+    num_lines = len(lines)
+    
+    # Patterns specific to the original format
+    selected_bet_pattern = re.compile(r'^(.*?)\s+(\d+[,.]?\d*)\b.*?$', re.IGNORECASE)
+    ignore_keywords = ["Stake", "To Return", "Cash Out", "Single", "Result", "Payout"]
+    stake_label_pattern = re.compile(r'Stake', re.IGNORECASE)
+    amount_value_pattern = re.compile(r'(\d+[.,]\d+)')
+    date_pattern = re.compile(r'([A-Za-z]{3}\s+\d{1,2}\s+[A-Za-z]{3})', re.IGNORECASE)
+    time_pattern = re.compile(r'(\d{2})[:.,]?(\d{2})$')
 
-    Parses text assuming the English format with 'Stake' label and amount below.
-    Looks for lines like 'o Team Name Odds' to identify bets.
-    Args:
-        image_path (str): Path to the image file.
-    Returns:
-        list: A list of dictionaries, each containing info for one bet, or None.
-    """
+    # Parsing Loop (same as before)
+    while i < num_lines:
+        line = lines[i]
+        logging.debug(f"[Original Format] Processing line {i}: '{line}'")
+        processed_bet_on_this_line = False
+
+        selected_match = selected_bet_pattern.match(line)
+        if selected_match:
+            potential_team_name = selected_match.group(1).strip()
+            is_ignored = any(keyword.lower() in potential_team_name.lower() for keyword in ignore_keywords)
+            
+            if not is_ignored:
+                team_name = potential_team_name
+                odds_str_raw = selected_match.group(2)
+                try: 
+                    # ... (Odds correction and validation logic remains the same) ...
+                    odds_str = odds_str_raw.replace(',', '.')
+                    odds = 0.0 
+                    if '.' not in odds_str and odds_str.isdigit():
+                        odds_int = int(odds_str)
+                        if 101 <= odds_int <= 2000: 
+                            odds = float(odds_int) / 100.0
+                            logging.info(f"    [Original Format] Corrected integer odds: '{odds_str_raw}' -> {odds:.2f}")
+                        else:
+                            odds = float(odds_str) 
+                    else:
+                        odds = float(odds_str)
+                    
+                    MIN_ODDS = 1.01
+                    MAX_ODDS = 20.0 
+                    if not (MIN_ODDS <= odds <= MAX_ODDS):
+                        logging.warning(f"    [Original Format] Odds {odds:.2f} ('{odds_str_raw}') invalid. Skipping.")
+                        i += 1 # Move to next line if odds invalid
+                        continue 
+                    # --- End Odds Validation ---
+
+                    logging.info(f"[Original Format] Potential Bet: Team='{team_name}', Odds={odds:.2f}")
+                    current_bet = {'team': team_name, 'odds': odds}
+                    found_stake = False
+                    found_date = False
+                    found_time = False
+                    last_scanned_line_idx = i
+                    search_end_idx = min(i + 7, num_lines)
+                    j = i + 1
+                    while j < search_end_idx:
+                        scan_line = lines[j]
+                        last_scanned_line_idx = j
+                        # Scan logic for stake, date, time
+                        if not found_stake:
+                            # This block needs to be indented
+                            stake_match = stake_label_pattern.search(scan_line)
+                            if stake_match:
+                                # This block needs to be indented under `if stake_match:`
+                                search_text_for_amount = scan_line[stake_match.end():].strip()
+                                if not search_text_for_amount and (j + 1 < search_end_idx):
+                                     search_text_for_amount = lines[j+1].strip()
+                                     if amount_value_pattern.fullmatch(search_text_for_amount):
+                                          last_scanned_line_idx = j + 1
+                                     else:
+                                          search_text_for_amount = ""
+                                amount_match = amount_value_pattern.search(search_text_for_amount)
+                                if amount_match:
+                                    try:
+                                        stake_str = amount_match.group(1).replace(',', '.')
+                                        current_bet['stake'] = float(stake_str)
+                                        found_stake = True
+                                        logging.info(f"    [Original Format] Found Stake: {current_bet['stake']}")
+                                    except ValueError: 
+                                         logging.warning(f"    [Original Format] Failed parse stake: '{amount_match.group(1)}'")
+                        # Indentation for date/time checks should align with the `if not found_stake:` check
+                        if not found_date:
+                            date_match = date_pattern.search(scan_line)
+                            if date_match: current_bet['date'] = date_match.group(1); found_date = True; logging.info(f"    [Original Format] Found Date: {current_bet['date']}")
+                        if not found_time:
+                            time_match = time_pattern.search(scan_line)
+                            if time_match: current_bet['time'] = f"{time_match.group(1)}:{time_match.group(2)}"; found_time = True; logging.info(f"    [Original Format] Found Time: {current_bet['time']}")
+                        j += 1
+                    
+                    if found_stake:
+                        current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S') # Fallback
+                        if found_date and found_time:
+                            try:
+                                formatted_date_str = f"{current_bet['date']} {datetime.now().year} {current_bet['time']}"
+                                current_bet['datetime'] = datetime.strptime(formatted_date_str, '%a %d %b %Y %H:%M').strftime('%Y-%m-%d %H:%M:%S')
+                            except Exception: pass
+                        logging.info(f"[Original Format] Adding complete bet: {current_bet}")
+                        bets.append(current_bet)
+                        i = last_scanned_line_idx # Jump index
+                        processed_bet_on_this_line = True
+                    else:
+                        logging.warning(f"[Original Format] Discarding bet (Stake missing): Team='{team_name}'")
+                except ValueError: 
+                    logging.warning(f"[Original Format] Could not parse odds '{odds_str_raw}'. Skipping.")
+        
+        if not processed_bet_on_this_line:
+            i += 1
+    
+    logging.info(f"Original Format parsing finished. Found {len(bets)} bets.")
+    return bets
+# <<< END HELPER FUNCTION >>>
+
+# <<< Placeholder for Coolbet parser >>>
+def _parse_format_coolbet(lines):
+    logging.warning("Coolbet parsing not yet implemented.")
+    # TODO: Implement parsing logic for Coolbet format here
+    return []
+# <<< END Placeholder >>>
+
+
+def extract_bet_info(image_path):
+    """Extracts bet info by detecting format and calling the appropriate parser."""
     if reader is None:
-        logging.error("EasyOCR Reader was not initialized. Cannot process image.")
+        logging.error("EasyOCR Reader not initialized.")
         feedback_label.config(text="OCR Engine Error (EasyOCR not initialized)")
         return None
         
     try:
-        # Load image with PIL first
         img = Image.open(image_path)
-        # Ensure image is in RGB format for consistency 
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-            logging.debug("Converted image to RGB format for EasyOCR.")
-            
-        # Convert PIL Image to NumPy array
+        if img.mode != 'RGB': img = img.convert('RGB')
         img_np = np.array(img) 
-        logging.debug(f"Converted image '{os.path.basename(image_path)}' to NumPy array with shape: {img_np.shape}")
+        logging.debug(f"Processing image '{os.path.basename(image_path)}'")
 
-        # Read text using EasyOCR from the NumPy array
-        # Pass the image data directly instead of the path
         result = reader.readtext(img_np, detail=0, paragraph=True)
         text = "\n".join(result) 
-        
-        logging.info(f"--- EasyOCR Output (from NumPy array) ---\\n{text}\\n--- End EasyOCR Output ---")
+        logging.info(f"--- EasyOCR Raw Output ---\n{text}\n--- End OCR Output ---")
 
-        # Keep the rest of the parsing logic, which operates on the 'text' variable
-        # and splits it into 'lines'. EasyOCR's output structure might require
-        # adjustments here if paragraph=True doesn't produce a similar enough structure.
-        
         lines = [line.strip() for line in text.split('\n') if line.strip()]
-        logging.debug(f"Cleaned lines for parsing: {lines}")
+        if not lines:
+            logging.warning("OCR produced no text lines.")
+            feedback_label.config(text="OCR found no text in the image.")
+            return None
 
-        bets = []
-        i = 0
-        num_lines = len(lines)
+        # --- Format Detection Logic --- 
+        detected_format = None
+        # Simple detection for now: Check for "Stake" label vs "Team - Team" structure
+        text_lower = text.lower()
+        has_stake_label = re.search(r'\bstake\b', text_lower) is not None
+        # Pattern for "Team A - Team B" (allows various characters in names)
+        # Corrected regex: pass re.MULTILINE as a flag argument
+        team_vs_team_pattern = r'^(.+?)\s+-\s+(.+?)$'
+        has_team_vs_team = re.search(team_vs_team_pattern, text, flags=re.MULTILINE) is not None 
+        has_match_result_line = "match result (1x2)" in text_lower
+
+        logging.debug(f"Format detection: has_stake_label={has_stake_label}, has_team_vs_team={has_team_vs_team}, has_match_result_line={has_match_result_line}")
+
+        if has_stake_label and not (has_team_vs_team and has_match_result_line):
+            # Likely original format if "Stake" is present and typical Coolbet structure isn't
+            detected_format = "Original"
+            bets = _parse_format_original(lines)
+        elif has_team_vs_team and has_match_result_line:
+            # Likely Coolbet format if Team-Team and Match Result line are present
+            detected_format = "Coolbet"
+            bets = _parse_format_coolbet(lines) # Call placeholder for now
+        else:
+            # Could be original format *without* a visible Stake label, or another format
+            # Let's try original first as a fallback if unsure?
+            logging.warning("Could not reliably detect format. Trying Original format as fallback...")
+            detected_format = "Original (Fallback)"
+            bets = _parse_format_original(lines)
+            if not bets:
+                logging.warning("Fallback Original format parsing failed. Attempting Coolbet format...")
+                detected_format = "Coolbet (Fallback)"
+                bets = _parse_format_coolbet(lines) # Call placeholder
         
-        # --- Regex Patterns (English Format - Revised bet line) ---
-        # Selection + Odds: Team Name, space(s), Odds (allowing text after odds)
-        selected_bet_pattern = re.compile(r'^(.*?)\s+(\d+[,.]?\d*)\b.*?$', re.IGNORECASE)
-        # Keywords to ignore if they appear in the potential team name part
-        ignore_keywords = ["Stake", "To Return", "Cash Out", "Single", "Result", "Payout"]
-        # Stake Label: Find 'Stake' case-insensitive
-        stake_label_pattern = re.compile(r'Stake', re.IGNORECASE)
-        # Amount Value: Find number like X.YY or X,YY
-        amount_value_pattern = re.compile(r'(\d+[.,]\d+)') 
-        # Date Pattern (e.g., Mon 14 Apr)
-        date_pattern = re.compile(r'([A-Za-z]{3}\s+\d{1,2}\s+[A-Za-z]{3})', re.IGNORECASE) 
-        # Time Pattern (HH:MM, HH.MM, HH,MM, HHMM)
-        time_pattern = re.compile(r'(\d{2})[:.,]?(\d{2})$')
-
-        # --- Parsing Loop (Revised bet identification) ---
-        while i < num_lines:
-            line = lines[i]
-            logging.debug(f"Processing line {i}: '{line}'")
-            processed_bet_on_this_line = False # Flag to check if we jumped 'i'
-
-            selected_match = selected_bet_pattern.match(line)
-            if selected_match:
-                potential_team_name = selected_match.group(1).strip()
-                is_ignored = any(keyword.lower() in potential_team_name.lower() for keyword in ignore_keywords)
-                
-                if not is_ignored:
-                    team_name = potential_team_name
-                    odds_str_raw = selected_match.group(2)
-                    try: 
-                        odds_str = odds_str_raw.replace(',', '.')
-                        odds = 0.0 # Initialize odds
-
-                        # --- Odds Correction Logic ---
-                        # Check if it's likely an integer representation (e.g., "200" for 2.00)
-                        if '.' not in odds_str and odds_str.isdigit():
-                            odds_int = int(odds_str)
-                            # Assume integers >= 101 and <= 2000 (representing 1.01 to 20.00) need conversion
-                            if 101 <= odds_int <= 2000: 
-                                odds = float(odds_int) / 100.0
-                                logging.info(f"    Corrected integer odds: '{odds_str_raw}' -> {odds:.2f}")
-                            else:
-                                # Treat as regular float if outside correction range (but still likely error)
-                                odds = float(odds_str) 
-                        else:
-                            # Parse as float directly if it contains a decimal or isn't purely digits
-                            odds = float(odds_str)
-                        # --- End Odds Correction ---
-
-                        # --- Odds Validation ---
-                        MIN_ODDS = 1.01
-                        MAX_ODDS = 20.0 # Set a reasonable upper limit
-                        if not (MIN_ODDS <= odds <= MAX_ODDS):
-                            logging.warning(f"    Odds {odds:.2f} (from '{odds_str_raw}') is outside the valid range [{MIN_ODDS}-{MAX_ODDS}]. Skipping this bet.")
-                            # Continue to the next line in the outer loop
-                            i = j -1 # Adjust index to re-evaluate the line after the failed bet section
-                            processed_bet_on_this_line = False # Mark as not processed to allow outer loop increment
-                            continue # Skip the rest of the bet processing for this invalid odds line
-                        # --- End Odds Validation ---
-
-                        logging.info(f"Found Potential Bet: Team='{team_name}', Odds={odds:.2f}")
-                        current_bet = {'team': team_name, 'odds': odds}
-                        found_stake = False
-                        found_date = False
-                        found_time = False
-                        last_scanned_line_idx = i
-                        search_end_idx = min(i + 7, num_lines)
-                        j = i + 1
-                        while j < search_end_idx:
-                            scan_line = lines[j]
-                            last_scanned_line_idx = j
-                            # Scan logic for stake, date, time (no changes)
-                            if not found_stake: # Look for stake
-                                stake_match = stake_label_pattern.search(scan_line)
-                                if stake_match:
-                                    # Look for amount *after* 'Stake' label on the same line or next
-                                    search_text_for_amount = scan_line[stake_match.end():].strip()
-                                    # If nothing after 'Stake', check next line
-                                    if not search_text_for_amount and (j + 1 < search_end_idx):
-                                         search_text_for_amount = lines[j+1].strip()
-                                         # Check if the next line is just the amount
-                                         if amount_value_pattern.fullmatch(search_text_for_amount):
-                                              last_scanned_line_idx = j + 1 # Advance outer loop if we used next line
-                                         else:
-                                              search_text_for_amount = "" # Reset if next line isn't just amount
-                                              
-                                    amount_match = amount_value_pattern.search(search_text_for_amount)
-                                    if amount_match:
-                                        try:
-                                            stake_str = amount_match.group(1).replace(',', '.')
-                                            current_bet['stake'] = float(stake_str)
-                                            found_stake = True
-                                            logging.info(f"    Found Stake Amount: {current_bet['stake']}")
-                                        except ValueError: 
-                                             logging.warning(f"    Could not parse stake value from '{amount_match.group(1)}'")
-                                    #else: # Don't log if stake amount not found yet, might be later
-                                    #    logging.debug(f"    'Stake' label found, but no amount nearby in '{search_text_for_amount}'")
-                            # ... (rest of the inner loop for date/time remains the same) ...
-                            if not found_date: # Look for date
-                                date_match = date_pattern.search(scan_line)
-                                if date_match: current_bet['date'] = date_match.group(1); found_date = True; logging.info(f"    Found Date: {current_bet['date']}")
-                            if not found_time: # Look for time
-                                time_match = time_pattern.search(scan_line)
-                                if time_match: current_bet['time'] = f"{time_match.group(1)}:{time_match.group(2)}"; found_time = True; logging.info(f"    Found Time: {current_bet['time']}")
-                            j += 1
-                        
-                        # Finalize bet if stake found
-                        if found_stake:
-                            # ... (datetime parsing) ...
-                            current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S') # Placeholder
-                            if found_date and found_time: # Try to parse if found
-                                try:
-                                    formatted_date_str = f"{current_bet['date']} {datetime.now().year} {current_bet['time']}"
-                                    current_bet['datetime'] = datetime.strptime(formatted_date_str, '%a %d %b %Y %H:%M').strftime('%Y-%m-%d %H:%M:%S')
-                                except Exception: pass # Use fallback on error
-                                
-                            logging.info(f"Adding complete bet: {current_bet}")
-                            bets.append(current_bet)
-                            i = last_scanned_line_idx # Jump outer loop index
-                            processed_bet_on_this_line = True
-                        else:
-                            logging.warning(f"Discarding bet (Stake missing): Team='{team_name}'")
-                    except ValueError: # Error parsing odds (should be less frequent now)
-                        logging.warning(f"Could not parse odds '{odds_str_raw}' for '{team_name}' even after checks. Skipping.")
-                # else: keyword ignored
-                
-            # Increment outer loop index ONLY if we didn't process a bet and jump 'i'
-            if not processed_bet_on_this_line:
-                i += 1
-        
+        # --- Process results --- 
         if bets:
-            logging.info(f"Successfully extracted {len(bets)} bets (EasyOCR): {bets}")
-            feedback_text = f"Found {len(bets)} bet(s):\\n"
+            logging.info(f"Successfully extracted {len(bets)} bets using {detected_format} parser.")
+            feedback_text = f"Found {len(bets)} bet(s) ({detected_format}):\n"
             for b in bets:
-                 feedback_text += f"• {b.get('team','N/A')} ({b.get('odds',0):.2f})\\n  Stake: €{b.get('stake',0):.2f} Time: {b.get('datetime', 'N/A')}\\n"
+                 feedback_text += f"• {b.get('team','N/A')} ({b.get('odds',0):.2f})\n  Stake: €{b.get('stake',0):.2f} Time: {b.get('datetime', 'N/A')}\n"
             feedback_label.config(text=feedback_text)
             return bets
         else:
-            preview = "\\n".join(lines[:15])
-            feedback_label.config(text=f"No valid English format bets found. Preview:\\n{preview}")
-            logging.warning(f"No valid bets found using EasyOCR. OCR text:\n{text}")
+            logging.warning(f"No valid bets found using {detected_format} parser.")
+            preview = "\n".join(lines[:15])
+            feedback_label.config(text=f"No valid bets found ({detected_format}). Preview:\n{preview}")
             return None
-
+            
+    # ... (rest of the except blocks remain the same) ...
     except AttributeError as ae:
+         # ...
          # Catch the specific AttributeError we saw
          logging.error(f"AttributeError during EasyOCR processing (possibly image loading issue): {ae}")
          import traceback
@@ -364,9 +373,12 @@ def extract_bet_info(image_path):
          feedback_label.config(text=f"Error processing image format/data. Check logs.")
          return None
     except Exception as e:
+        # Add pass to fix indentation error
+        pass 
+        # ... (Existing exception handling code) ...
         import traceback
         error_details = traceback.format_exc()
-        logging.error(f"Error in extract_bet_info (EasyOCR): {e}\\n{error_details}")
+        logging.error(f"Error in extract_bet_info (EasyOCR): {e}\n{error_details}")
         # Check if it's an EasyOCR model download issue
         if "download attempt failed" in str(e).lower():
              messagebox.showerror("EasyOCR Error", "Failed to download EasyOCR models. Check internet connection and permissions.")
@@ -557,76 +569,65 @@ def update_history_table(filtered_df=None):
 
     # Add rows to Treeview
     for index, row in display_df.iterrows():
-        tags = []
-        result = row.get("Result", "Pending") # Default to Pending if missing
+        # --- Get data from the DataFrame row FIRST --- 
+        result = row.get("Result", "Pending")
         stake = row.get("Stake", 0.0)
         payout = row.get("Payout", 0.0)
         odds = row.get("Odds", 0.0)
         match_name = row.get("Match", "N/A")
         league = row.get("League", "N/A")
-        date_str = row.get("Date", "N/A") # Get original date string
+        date_str = row.get("Date", "N/A")
+        df_index = index # Get the DataFrame index for this row
+        logging.debug(f"Processing row for Treeview, DataFrame index: {df_index}, Match: {match_name}")
+        # --- END Get data ---
+
         display_date = date_str # Default display
         try: # Format date for display if possible
-             # Try standard format first
              dt_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
              display_date = dt_obj.strftime('%d %b %Y %H:%M')
         except (ValueError, TypeError): 
-             try: # Try older format if first fails
+             try: 
                  dt_obj = datetime.strptime(date_str, '%d.%m.%Y')
-                 display_date = dt_obj.strftime('%d %b %Y') # No time in old format
+                 display_date = dt_obj.strftime('%d %b %Y')
              except (ValueError, TypeError):
-                 pass # Keep original string if all parsing fails
-
+                 pass 
+        
         # Determine tags based on result
+        tags = []
+        # Now we can safely use 'result'
         if result == "Pending":
             tags.append('pending')
-            payout_str = "€0.00" # Pending bets have 0 payout initially
+            payout_str = "€0.00"
         elif result == "Win":
             tags.append('win')
-            # Payout should be calculated correctly when marked as won
-            payout_str = f"+€{payout:.2f}" if payout > 0 else f"+€{stake * odds:.2f}" # Show calculated if 0?
+            payout_str = f"+€{payout:.2f}" if payout > 0 else f"+€{stake * odds:.2f}"
         elif result == "Loss":
             tags.append('loss')
-            payout_str = f"-€{stake:.2f}" # Show stake loss
-        else: # Handle other potential states or nulls
-             tags.append('pending') # Default tag
+            payout_str = f"-€{stake:.2f}"
+        else: 
+             tags.append('pending')
              payout_str = f"€{payout:.2f}"
 
         # Format values for display
         odds_str = f"{odds:.2f}"
         stake_str = f"€{stake:.2f}"
-        
-        # Determine text/symbols for Action/Delete columns
-        # Use emojis for pending actions
         action_text = "✅ / ❌" if result == "Pending" else ""
-        delete_symbol = "🗑️" # Or use text like "Del"
+        delete_symbol = "🗑️"
         
-        # Insert item into the tree with the new columns
+        # Insert item, including the DataFrame index as the LAST value
         item_id = tree.insert("", "end", values=(
-            match_name,
-            league,
-            odds_str,
-            stake_str,
-            result, # This is the base result string
-            payout_str,
-            display_date, # Use formatted or original date string
-            action_text,  
-            delete_symbol 
-        ), tags=tuple(tags)) # Apply initial tags (win/loss/pending)
+            match_name, league, odds_str, stake_str, result,
+            payout_str, display_date, action_text, delete_symbol,
+            df_index # <<< Add DataFrame index here
+        ), tags=tuple(tags)) # Apply initial tags
 
-        # Apply striping based on tree index 
-        # Determine the base tag (win, loss, or pending) to re-apply
+        # Apply striping 
         status_tag = tags[0] if tags else 'pending' 
         final_tags = list(tags)
         if tree.index(item_id) % 2 == 1:
              final_tags.append('striped')
-             # Apply striped tag first
-             tree.item(item_id, tags=tuple(final_tags)) 
-        # Ensure the status tag (which controls color) is the primary visual cue if needed
-        # Re-applying isn't strictly necessary if style precedence is correct, 
-        # but explicitly setting it after potential striping can sometimes help.
-        # Let's rely on the style configuration first. If colors still fail,
-        # we might need: tree.item(item_id, tags=tuple(final_tags)) # Re-apply all tags
+        # Apply the combined tags     
+        tree.item(item_id, tags=tuple(final_tags)) 
 
 # --- Treeview Action Functions ---
 # Define these before they are bound to the treeview
@@ -692,106 +693,164 @@ def update_bet_result(selected_item_id, result):
         messagebox.showerror("Error", f"Failed to update bet result: {e}")
 
 def delete_selected_bet(selected_item_id):
-    """Deletes the selected bet from history and adjusts bankroll if needed."""
-    logging.debug(f"delete_selected_bet called for item: {selected_item_id}") # Log entry
+    """Deletes the selected bet from history using its DataFrame index."""
+    # --- Enhanced Logging Start --- 
+    logging.info(f"--- delete_selected_bet initiated for Treeview item: {selected_item_id} ---")
     global history, bankroll
+    
+    # Log initial history size
+    logging.debug(f"  History size BEFORE delete attempt: {len(history)}")
+    logging.debug(f"  History indices BEFORE delete attempt: {history.index.tolist()}")
+    
     try:
         item_values = tree.item(selected_item_id)['values']
-        logging.debug(f"  Item values retrieved: {item_values}") # Log values
-        # Get data based on current column order: Match, League, Odds, Stake, Result, Payout, Date
-        match_name = item_values[0]
-        odds = float(item_values[2])
-        stake = float(item_values[3].replace('€', ''))
-        result = item_values[4]
-        # Payout parsing needs care depending on format in table (+€X.XX or -€Y.YY)
-        # For simplicity, recalculate impact based on result
+        logging.info(f"  Retrieved item values: {item_values}")
         
-        # Find the bet in history
-        matching_bets = history[
-            (history["Match"] == match_name) &
-            (history["Odds"].round(2) == round(odds, 2)) &
-            (history["Stake"].round(2) == round(stake, 2))
-            # Add Result/Date check if needed for uniqueness
-        ]
-        logging.debug(f"  DataFrame search for bet to delete returned empty: {matching_bets.empty}") # Log search result
-        
-        if matching_bets.empty:
-             messagebox.showerror("Delete Error", f"Could not find unique bet for {match_name} to delete.")
-             logging.error(f"Could not find unique bet in history for deletion: {item_values}")
-             return
-             
-        idx = matching_bets.index[0]
-        original_result = history.loc[idx, "Result"]
-        original_payout = history.loc[idx, "Payout"]
-        original_stake = history.loc[idx, "Stake"]
+        # --- Retrieve DataFrame index from Treeview --- 
+        df_index_to_delete = None # Initialize
+        try:
+            # Assuming 'Index' is the 10th value (index 9)
+            df_index_to_delete = int(item_values[9]) 
+            logging.info(f"  Extracted DataFrame index from Treeview: {df_index_to_delete}")
+        except (IndexError, ValueError, TypeError) as e:
+            logging.error(f"  ERROR retrieving DataFrame index (index 9) from Treeview values ({item_values}): {e}")
+            messagebox.showerror("Delete Error", "Could not identify the bet's internal ID.")
+            return
 
-        # Reverse bankroll impact ONLY if bet was completed
+        # --- Verify index exists in current history DataFrame --- 
+        index_exists = df_index_to_delete in history.index
+        logging.info(f"  Checking if index {df_index_to_delete} exists in history.index: {index_exists}")
+        if not index_exists:
+            logging.error(f"  DataFrame index {df_index_to_delete} NOT FOUND in current history DataFrame indices: {history.index.tolist()}")
+            messagebox.showerror("Delete Error", "Bet not found in history (it might have been deleted already or data is out of sync).")
+            update_history_table() # Refresh table to reflect current state
+            return
+
+        # --- Get necessary data directly from DataFrame using the index --- 
+        logging.debug(f"  Accessing history.loc[{df_index_to_delete}]...")
+        original_row = history.loc[df_index_to_delete]
+        original_result = original_row["Result"]
+        original_payout = float(original_row["Payout"]) # Ensure float
+        original_stake = float(original_row["Stake"])   # Ensure float
+        match_name = original_row["Match"] # Get name for feedback msg
+        logging.info(f"  Data for index {df_index_to_delete}: Result={original_result}, Payout={original_payout}, Stake={original_stake}")
+
+        # --- Reverse bankroll impact ONLY if bet was completed --- 
+        # (Bankroll adjustment logic remains the same)
         if original_result == "Win":
-            bankroll -= original_payout # Remove original payout
+            bankroll -= original_payout 
             logging.info(f"Deleting Won Bet: Reversing bankroll impact by -€{original_payout:.2f}")
         elif original_result == "Loss":
-            bankroll += original_stake # Add back original stake
+            bankroll += original_stake 
             logging.info(f"Deleting Lost Bet: Reversing bankroll impact by +€{original_stake:.2f}")
-        # No bankroll change if deleting a Pending bet
+        else: 
+             logging.info(f"Deleting Pending/Other status bet ({original_result}). No bankroll adjustment needed.")
+    
+        # --- Remove from history DataFrame using the direct index --- 
+        logging.info(f"  Attempting to drop index {df_index_to_delete} from history...")
+        history = history.drop(index=df_index_to_delete).reset_index(drop=True)
+        logging.info(f"  Index {df_index_to_delete} dropped. New history size: {len(history)}")
+        logging.debug(f"  History indices AFTER drop: {history.index.tolist()}") # Should be renumbered from 0
         
-        # Remove from history DataFrame
-        history = history.drop(index=idx).reset_index(drop=True)
-        
-        # Save changes
+        # --- Save changes --- 
+        logging.debug("  Saving bankroll and history...")
         save_bankroll(bankroll)
         save_history(history)
+        logging.debug("  Save complete.")
         
-        # Update UI
+        # --- Update UI --- 
+        logging.debug("  Updating UI (bankroll label, history table, feedback label)...")
         br_label.config(text=f"Bankroll: €{bankroll:.2f}")
-        update_history_table()
+        update_history_table() # Refresh table view
         feedback_label.config(text=f"Deleted bet: {match_name}")
-        logging.info(f"Deleted bet: {match_name} (Index: {idx}). Bankroll adjusted to €{bankroll:.2f}")
+        logging.info(f"--- Successfully deleted bet: {match_name} (Index was: {df_index_to_delete}). Bankroll: €{bankroll:.2f} ---")
         
+    except KeyError as ke:
+         # Specific handling if .loc fails even after index check (shouldn't happen often)
+         logging.error(f"KeyError accessing history.loc[{df_index_to_delete}] even after index check: {ke}", exc_info=True)
+         messagebox.showerror("Delete Error", f"Error accessing bet data (Index: {df_index_to_delete}). Data might be inconsistent.")
     except Exception as e:
-        logging.error(f"Error deleting bet {selected_item_id}: {e}")
+        logging.error(f"--- ERROR during delete_selected_bet for item {selected_item_id} (index {df_index_to_delete}): {e} ---", exc_info=True)
         messagebox.showerror("Error", f"Failed to delete bet: {e}")
 
 def on_tree_click(event):
     """Handles left-clicks on the Treeview, specifically for action/delete cells."""
-    logging.debug(f"on_tree_click triggered at ({event.x}, {event.y})") # Log entry
+    # --- VERY FIRST LOG: Check if function is called at all --- 
+    logging.info(f"*** on_tree_click function CALLED at ({event.x}, {event.y}) ***")
+    
+    # ... (rest of the function: logging, identification, logic) ...
+    logging.debug(f"on_tree_click triggered at ({event.x}, {event.y})")
     region = tree.identify("region", event.x, event.y)
-    selected_item_id = tree.identify_row(event.y)
     column_id = tree.identify_column(event.x)
-    logging.debug(f"  Identified region: {region}, item: {selected_item_id}, column_id: {column_id}") # Log identification
+    selected_item_id = tree.identify_row(event.y)
+    logging.debug(f"  Identified region: {region}, item: {selected_item_id}, column_id: {column_id}")
     
     if region == "cell" and selected_item_id and column_id:
         try:
              column_index = int(column_id.replace('#', '')) - 1
-             logging.debug(f"  Calculated column index: {column_index}") # Log index
+             logging.debug(f"  Calculated column index: {column_index}")
         except ValueError:
-             logging.debug("  Could not determine column index.")
+             logging.warning("  Could not determine column index from column_id.")
              return
              
-        if not selected_item_id: return
-        item_values = tree.item(selected_item_id)['values']
-        if not item_values: return
-        current_result = item_values[4]
+        if not selected_item_id: return # No item clicked
         
-        if column_index == 7 and current_result == "Pending":  # Actions column (index 7)
-            logging.debug("  Click detected in Actions column for Pending bet.")
-            cell_box = tree.bbox(selected_item_id, column=column_id)
-            if cell_box:
-                 relative_x = event.x - cell_box[0]
-                 if relative_x < cell_box[2] / 2:
-                     logging.debug("  Calling update_bet_result (Win)")
-                     update_bet_result(selected_item_id, "Win")
-                 else:
-                     logging.debug("  Calling update_bet_result (Loss)")
-                     update_bet_result(selected_item_id, "Loss")
-            else: 
-                 logging.debug("  Could not get cell bbox for Actions column.")
-        elif column_index == 8:  # Delete column (index 8)
-            logging.debug("  Click detected in Delete column.")
-            # Directly call delete_selected_bet without asking for confirmation.
-            logging.debug("  Calling delete_selected_bet (no confirmation)")
+        # --- Get item values early for debugging --- 
+        item_values = None
+        try:
+            item_values = tree.item(selected_item_id)['values']
+            logging.debug(f"  Retrieved item values for {selected_item_id}: {item_values}")
+        except Exception as e:
+             logging.error(f"  Failed to get item values for {selected_item_id}: {e}")
+             return # Cannot proceed without item values
+        
+        # Check if item_values is valid (not None and not empty)
+        if not item_values:
+            logging.warning(f"  Item values list is empty or None for {selected_item_id}. Aborting click action.")
+            return
+        
+        # --- Check for Delete Column Click FIRST --- 
+        if column_index == 8:  # Delete column (index 8)
+            logging.info(f"--> Delete column ({column_index}) clicked for item: {selected_item_id}")
+            # --- Log the values just before calling delete --- 
+            logging.info(f"    Values associated with item {selected_item_id}: {item_values}")
+            # Check if index exists at position 9 before calling delete
+            if len(item_values) > 9:
+                 logging.info(f"    Index value at item_values[9]: {item_values[9]}")
+            else:
+                 logging.warning(f"    Item values list has length {len(item_values)}, expected > 9. Index might be missing.")
+                 
             delete_selected_bet(selected_item_id)
+            return # Action completed, exit function
+
+        # --- Check for Actions Column Click (Only if Result is Pending) --- 
+        if column_index == 7: # Actions column (index 7)
+            try:
+                current_result = item_values[4] # Get result from values
+            except IndexError:
+                logging.error(f"Could not get result (index 4) from item_values: {item_values}")
+                return
+                
+            if current_result == "Pending":
+                logging.debug("  Click detected in Actions column for Pending bet.")
+                cell_box = tree.bbox(selected_item_id, column=column_id)
+                if cell_box:
+                     relative_x = event.x - cell_box[0]
+                     # Determine if click was on Win (left) or Loss (right) part
+                     if relative_x < cell_box[2] / 2:
+                         logging.debug(f"  Calling update_bet_result (Win) for item: {selected_item_id}")
+                         update_bet_result(selected_item_id, "Win")
+                     else:
+                         logging.debug(f"  Calling update_bet_result (Loss) for item: {selected_item_id}")
+                         update_bet_result(selected_item_id, "Loss")
+                     return # Action completed, exit function
+                else: 
+                     logging.warning("  Could not get cell bbox for Actions column.")
+            else:
+                logging.debug(f"  Click in Actions column ignored (Result is '{current_result}')")
+        # --- If click was not in Delete or actionable Actions column --- 
         else:
-            logging.debug(f"  Click was in column {column_index}, not Actions(7) or Delete(8).")
+            logging.debug(f"  Click was in column {column_index}, not actionable.")
 
 def show_context_menu(event):
     """Displays a right-click context menu for the selected Treeview item."""
@@ -827,21 +886,14 @@ def show_context_menu(event):
 def show_main_page():
     """Hides stats frame and shows the main betting interface frames."""
     logging.info("Switching to Main page.")
-    # Hide stats frame if it exists
     if stats_frame.winfo_exists() and stats_frame.winfo_manager() == 'grid':
         stats_frame.grid_forget()
     
-    # Show main frames using grid in COLUMN 1
-    # Ensure br_frame is shown
-    if br_frame.winfo_exists():
-         br_frame.grid(row=0, column=1, sticky="ew", padx=10, pady=(10, 5))
-    # Show other main frames
-    if upload_frame.winfo_exists():
-        upload_frame.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
-    if league_filter_frame.winfo_exists():
-        league_filter_frame.grid(row=2, column=1, sticky="ew", padx=10, pady=5)
-    if history_frame.winfo_exists():
-        history_frame.grid(row=3, column=1, sticky="nsew", padx=10, pady=(5, 10))
+    # Show the main card frames
+    br_frame.grid(row=0, column=1, sticky="ew", padx=20, pady=(10, 5))
+    feedback_frame.grid(row=1, column=1, sticky="ew", padx=20, pady=5)
+    league_filter_frame.grid(row=2, column=1, sticky="ew", padx=20, pady=5)
+    history_frame.grid(row=3, column=1, sticky="nsew", padx=20, pady=(5, 10))
 
 def update_stats_display(period='all'):
     """Calculates and displays statistics for the selected period."""
@@ -1294,33 +1346,28 @@ def show_stats_page():
     global stats_frame 
     logging.info("Switching to Stats page.")
     
-    # Hide ALL main content frames, including bankroll
-    if br_frame.winfo_exists() and br_frame.winfo_manager() == 'grid':
-        br_frame.grid_forget()
-    if upload_frame.winfo_exists() and upload_frame.winfo_manager() == 'grid':
-        upload_frame.grid_forget()
-    if league_filter_frame.winfo_exists() and league_filter_frame.winfo_manager() == 'grid':
-        league_filter_frame.grid_forget()
-    if history_frame.winfo_exists() and history_frame.winfo_manager() == 'grid':
-        history_frame.grid_forget()
+    # Hide ALL main card frames
+    br_frame.grid_forget()
+    feedback_frame.grid_forget()
+    league_filter_frame.grid_forget()
+    history_frame.grid_forget()
     
-    # Show stats frame using grid in COLUMN 1, spanning ALL rows (0-3)
+    # Show stats frame using grid in COLUMN 1, spanning ALL rows
     if not stats_frame.winfo_exists():
-         logging.warning("stats_frame did not exist, recreating it.")
          stats_frame = tk.Frame(root, bg="#212121")
-    # Span all 4 rows used by the main layout
     stats_frame.grid(row=0, column=1, rowspan=4, sticky="nsew", padx=10, pady=5) 
-    stats_frame.grid_rowconfigure(2, weight=1) # Row containing stats_content_frame should expand
+    stats_frame.grid_rowconfigure(2, weight=1) 
     stats_frame.grid_columnconfigure(0, weight=1)
     
-    # Clear previous stats widgets
+    # Clear previous stats widgets (important!)
     for widget in stats_frame.winfo_children():
         widget.destroy()
     
-    # --- Create the layout within stats_frame ---
+    # --- Recreate the layout within stats_frame (using cards soon) ---
     back_button_frame = tk.Frame(stats_frame, bg="#212121")
     back_button_frame.grid(row=0, column=0, sticky="ew", pady=(5, 10))
     ttk.Button(back_button_frame, text="← Back to Bets", command=show_main_page, style="TButton").pack(side="left", padx=10)
+    
     period_frame = tk.Frame(stats_frame, bg="#212121")
     period_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
     ttk.Label(period_frame, text="Select Period:", font=("Segoe UI", 11, "bold"), foreground="#03A9F4").pack(side="left", padx=(0, 10))
@@ -1328,18 +1375,15 @@ def show_stats_page():
     ttk.Button(period_frame, text="Last 7 Days", command=lambda: update_stats_display('week'), style="TButton").pack(side="left", padx=5)
     ttk.Button(period_frame, text="Last 30 Days", command=lambda: update_stats_display('month'), style="TButton").pack(side="left", padx=5)
     ttk.Button(period_frame, text="All Time", command=lambda: update_stats_display('all'), style="TButton").pack(side="left", padx=5)
-    stats_content_frame = tk.Frame(stats_frame, bg="#313131") 
+    
+    # --- Stats Content Frame (will hold the stat cards) ---
+    # Give this the card background color
+    stats_content_frame = tk.Frame(stats_frame, bg="#313131", bd=1, relief="ridge") 
     stats_content_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
     stats_content_frame.grid_columnconfigure(0, weight=1)
-    stats_content_frame.grid_rowconfigure(0, weight=1) # Give row 0 weight for the test label
+    # Row configuration will happen dynamically in update_stats_display
 
-    # Remove temporary debug label
-    # test_label = ttk.Label(stats_content_frame, text="Test Label - stats_content_frame is visible!", 
-    #                        background="yellow", foreground="black", font=("Segoe UI", 16))
-    # test_label.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
-    # END TEMPORARY DEBUG
-
-    # Delay the initial stats update slightly to allow window layout processing
+    # Delay the initial stats update 
     stats_content_frame.after(100, lambda: update_stats_display('all'))
 
 # --- End of Stats Page Functionality ---
@@ -1398,10 +1442,27 @@ style.configure("TButton",
                 foreground="#FFFFFF") # White text
 style.map("TButton",
           background=[('active', '#616161')]) # Slightly lighter on hover/press
+
+# Labels within the main background
 style.configure("TLabel", 
                 font=("Segoe UI", 11), 
                 background="#212121", 
                 foreground="#E0E0E0")
+# Labels INSIDE cards/frames
+style.configure("Card.TLabel", 
+                font=("Segoe UI", 10), 
+                background="#313131", # Card background
+                foreground="#E0E0E0")
+style.configure("CardTitle.TLabel", 
+                font=("Segoe UI", 12, "bold"), 
+                background="#313131", 
+                foreground="#03A9F4") # Accent color title
+style.configure("Feedback.TLabel", # Feedback specifically
+                font=("Segoe UI", 10), 
+                background="#313131", # Match card background
+                foreground="#BDBDBD", 
+                padding=(5, 5))
+
 style.configure("TCombobox", 
                 font=("Segoe UI", 10),
                 background="#424242",
@@ -1413,186 +1474,146 @@ style.map('TCombobox', fieldbackground=[('readonly', '#424242')])
 style.map('TCombobox', selectbackground=[('readonly', '#616161')])
 style.map('TCombobox', selectforeground=[('readonly', '#FFFFFF')])
 
-
-# Configure custom style for feedback label (more subtle)
-style.configure("Feedback.TLabel",
-                font=("Segoe UI", 10),
-                background="#212121",
-                foreground="#BDBDBD", # Slightly dimmer feedback text
-                padding=(5, 5))
-
 # Configure Treeview colors and fonts for dark theme
 style.configure("Treeview",
                 font=("Segoe UI", 10),
-                background="#313131", # Slightly lighter than main bg
+                background="#313131", # Match card background
                 foreground="#E0E0E0",
                 fieldbackground="#313131",
-                rowheight=28) # Adjust row height if needed
+                rowheight=28) 
 
 style.configure("Treeview.Heading",
                 font=("Segoe UI", 10, "bold"),
                 background="#424242", # Header background
                 foreground="#03A9F4", # Light blue header text
                 padding=(8, 4),
-                relief="flat") # Flat header look
+                relief="flat") 
 style.map("Treeview.Heading",
           background=[('active', '#525252')])
 
 # Selected item style
 style.map('Treeview',
-          background=[('selected', '#515151')], # Darker selection background
+          background=[('selected', '#515151')], 
           foreground=[('selected', '#FFFFFF')])
 
-# --- Tag configurations for Treeview rows (Win/Loss/Pending) ---
-# Use foreground colors for subtle visual distinction
-style.configure("win.Treeview", foreground="#81C784") # Green text for win
-style.configure("loss.Treeview", foreground="#E57373") # Red text for loss
-# Backgrounds will be handled by default/striped styles
-style.configure("pending.Treeview", foreground="#E0E0E0") # Default text color
-style.configure("striped.Treeview", background="#3A3A3A") # Keep striped background subtle
+# Tag configurations (Foreground colors)
+style.configure("win.Treeview", foreground="#81C784") 
+style.configure("loss.Treeview", foreground="#E57373") 
+style.configure("pending.Treeview", foreground="#E0E0E0") 
+style.configure("striped.Treeview", background="#3A3A3A") # Stripe background
 
-# Create all frames with the new dark background
-br_frame = tk.Frame(root, bg="#212121")
-upload_frame = tk.Frame(root, bg="#212121")
-history_frame = tk.Frame(root, bg="#212121")
-stats_frame = tk.Frame(root, bg="#212121")
-league_filter_frame = tk.Frame(root, bg="#212121")
-
-# Bankroll Frame setup 
-br_label = ttk.Label(br_frame, 
-                    text=f"Bankroll: €{bankroll:.2f}", 
-                    foreground="#03A9F4", # Use theme accent color
-                    font=("Segoe UI", 14, "bold"))
-# Center the label by making it span the middle columns (1, 2, 3)
-br_label.grid(row=0, column=1, columnspan=3, pady=(10, 5)) 
-
-# Bankroll buttons (using ttk.Button now for consistent styling)
-button_style = {
-    "width": 15 # Slightly wider buttons
+# Card Frame Style (using tk.Frame as base)
+card_style = {
+    "bg": "#313131",
+    "bd": 1, # Subtle border
+    "relief": "ridge" # Subtle border relief
 }
 
-# Remove the +50 and -50 buttons
-# ttk.Button(br_frame, text="+€50", 
-#            command=lambda: adjust_bankroll(50),
-#            style="TButton", # Apply ttk style
-#            **button_style).grid(row=1, column=0, padx=5, pady=5)
-# 
-# ttk.Button(br_frame, text="-€50", 
-#            command=lambda: adjust_bankroll(-50),
-#            style="TButton",
-#            **button_style).grid(row=1, column=1, padx=5, pady=5)
+# --- Main Frames Setup ---
+# Replace direct frame creation with styled frames
+br_frame = tk.Frame(root, **card_style)
+# Remove upload frame for now, simplify drop target feedback
+# upload_frame = tk.Frame(root, **card_style)
+feedback_frame = tk.Frame(root, **card_style) # Frame for feedback label
+league_filter_frame = tk.Frame(root, **card_style)
+history_frame = tk.Frame(root, **card_style)
+stats_frame = tk.Frame(root, bg="#212121") # Stats main container still uses root bg
 
-# Add remaining buttons in the middle columns (1, 2, 3)
+# --- Bankroll Frame Content ---
+br_frame.grid_columnconfigure((0, 4), weight=1) # Keep centering config
+br_frame.grid_columnconfigure((1, 2, 3), weight=0)
+
+br_label = ttk.Label(br_frame, 
+                    text=f"Bankroll: €{bankroll:.2f}", 
+                    foreground="#FFFFFF", # White text on card
+                    background="#313131", # Match card background
+                    font=("Segoe UI", 14, "bold"))
+br_label.grid(row=0, column=1, columnspan=3, pady=(10, 10))
+
+button_style = {"width": 15}
 ttk.Button(br_frame, text="Reset Bankroll", 
-           command=lambda: adjust_bankroll(200 - bankroll), # Assuming 200 is default
+           command=lambda: adjust_bankroll(200 - bankroll), 
            style="TButton",
-           **button_style).grid(row=1, column=1, padx=5, pady=5) # Column 1
-
+           **button_style).grid(row=1, column=1, padx=5, pady=(5, 10))
 ttk.Button(br_frame, text="Manual Change", 
            command=manual_bankroll_change,
            style="TButton",
-           **button_style).grid(row=1, column=2, padx=5, pady=5) # Column 2
-
-# Add Show Stats button
+           **button_style).grid(row=1, column=2, padx=5, pady=(5, 10))
 ttk.Button(br_frame, text="Show Stats", 
            command=show_stats_page,
            style="TButton",
-           **button_style).grid(row=1, column=3, padx=5, pady=5) # Column 3
+           **button_style).grid(row=1, column=3, padx=5, pady=(5, 10))
 
-# Configure br_frame columns to center the buttons
-# Give empty columns 0 and 4 equal weight to push content to the middle
-br_frame.grid_columnconfigure(0, weight=1)
-br_frame.grid_columnconfigure(1, weight=0) # Button column
-br_frame.grid_columnconfigure(2, weight=0) # Button column
-br_frame.grid_columnconfigure(3, weight=0) # Button column
-br_frame.grid_columnconfigure(4, weight=1)
-
-
-# File Upload Area - No specific drop zone widget needed anymore
+# --- Drop Target Info & Feedback Frame ---
 # Make the entire root window the drop target
 root.drop_target_register(DND_FILES)
 root.dnd_bind('<<Drop>>', on_drop) 
 logging.info("Root window registered as drop target.")
 
-# Simplified upload section label
-upload_info_label = ttk.Label(upload_frame, 
-                              text="Drop Bet Screenshot Anywhere", 
-                              font=("Segoe UI", 12, "italic"),
-                              foreground="#BDBDBD") # Dimmer text
-upload_info_label.pack(pady=(5, 0))
+feedback_frame.grid_columnconfigure(0, weight=1)
 
-# Feedback Label - stays in the upload frame for now
-feedback_label = ttk.Label(upload_frame, 
+upload_info_label = ttk.Label(feedback_frame, 
+                              text="Drop Bet Screenshot Anywhere To Add", 
+                              style="Card.TLabel", # Use card label style
+                              font=("Segoe UI", 11, "italic"),
+                              foreground="#BDBDBD")
+upload_info_label.grid(row=0, column=0, pady=(5, 0), padx=10)
+
+feedback_label = ttk.Label(feedback_frame, 
                            text="App ready. Drop a screenshot.", 
-                           style="Feedback.TLabel",
-                           wraplength=500, # Adjust wrap length if needed
-                           anchor="center") # Center the text
-feedback_label.pack(pady=5, padx=10, fill="x")
+                           style="Feedback.TLabel", # Specific style for feedback
+                           wraplength=500, 
+                           anchor="center") 
+feedback_label.grid(row=1, column=0, pady=(0, 5), padx=10, sticky="ew")
 
+# --- League Filter Frame Content ---
+league_filter_frame.grid_columnconfigure(1, weight=1) # Allow combobox to expand a bit
 
-# Add league filter 
 ttk.Label(league_filter_frame, 
           text="Filter by League:", 
-          font=("Segoe UI", 11, "bold"),
-          foreground="#03A9F4").pack(side="left", padx=(20, 5), pady=5) # Added y-padding
+          style="CardTitle.TLabel", # Use card title style (or similar)
+          foreground="#FFFFFF", # White text on card
+          font=("Segoe UI", 11, "bold")
+         ).grid(row=0, column=0, padx=(10, 5), pady=10, sticky="w")
 
 league_var = tk.StringVar(value="All Leagues")
-# Fetch leagues dynamically for the combobox
 all_leagues = ["All Leagues"] + sorted(list(history['League'].astype(str).unique()))
 league_combo = ttk.Combobox(league_filter_frame, 
                             textvariable=league_var,
                             values=all_leagues,
                             state="readonly",
-                            width=35, # Adjusted width
-                            font=("Segoe UI", 10)) # Explicit font
-league_combo.pack(side="left", padx=5, pady=5)
+                            width=40, # Adjusted width
+                            font=("Segoe UI", 10))
+league_combo.grid(row=0, column=1, padx=(0, 10), pady=10, sticky="ew")
 
-# ... rest of filter_by_league function ...
+# --- History Frame Content ---
+history_frame.grid_rowconfigure(1, weight=1) # Allow treeview row to expand
+history_frame.grid_columnconfigure(0, weight=1) # Allow treeview col to expand
 
-# History Table
+history_title = ttk.Label(history_frame, text="Bet History (Today)", style="CardTitle.TLabel")
+history_title.grid(row=0, column=0, columnspan=2, pady=(5, 5), padx=10, sticky="nw")
+
 tree = ttk.Treeview(history_frame, 
-                    columns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", "Actions", "Delete"), # Added Actions, Delete
+                    columns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", "Actions", "Delete", "Index"), # Added Index column
                     show="headings",
-                    height=18, 
+                    displaycolumns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", "Actions", "Delete"), # Hide Index column visually
+                    height=15, 
                     style="Treeview")
+# ... (Treeview headings and column config remains the same) ...
 
-# Configure columns (Adjusting headings and widths)
-tree.heading("Match", text="Match", anchor="w")
-tree.heading("League", text="League", anchor="w")
-tree.heading("Odds", text="Odds", anchor="center")
-tree.heading("Stake", text="Stake (€)", anchor="e") 
-tree.heading("Result", text="Result", anchor="center")
-tree.heading("Payout", text="Payout (€)", anchor="e") 
-tree.heading("Date", text="Date Added", anchor="center") 
-tree.heading("Actions", text="Actions", anchor="center") # New heading
-tree.heading("Delete", text="Del", anchor="center")     # New heading (shortened)
-
-# Configure column widths 
-tree.column("Match", width=300, anchor="w")
-tree.column("League", width=250, anchor="w") # << Increased width from 180
-tree.column("Odds", width=70, anchor="center")
-tree.column("Stake", width=90, anchor="e")
-tree.column("Result", width=90, anchor="center")
-tree.column("Payout", width=100, anchor="e")
-tree.column("Date", width=120, anchor="center")
-tree.column("Actions", width=100, anchor="center") # Width for Win/Loss
-tree.column("Delete", width=40, anchor="center")   # Width for Delete button
-
-# Add scrollbar for the Treeview
 scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=tree.yview)
 tree.configure(yscrollcommand=scrollbar.set)
-
-# Remove padding around the tree, use frame padding instead
-# tree.pack(fill="both", expand=True, padx=20, pady=10) 
-tree.grid(row=0, column=0, sticky='nsew', padx=(10, 0), pady=10) # Use grid
-scrollbar.grid(row=0, column=1, sticky='ns', padx=(0, 10), pady=10) # Place scrollbar next to tree
+tree.grid(row=1, column=0, sticky='nsew', padx=(10, 0), pady=(0, 10)) # Treeview takes row 1
+scrollbar.grid(row=1, column=1, sticky='ns', padx=(0, 10), pady=(0, 10))
 
 # Bind mouse clicks to functions
 tree.bind('<Button-1>', on_tree_click)      # Left-click handler
+logging.info("--- <Button-1> bound to on_tree_click for history Treeview ---") # <<< ADD THIS LOG
 tree.bind('<Button-3>', show_context_menu) # Right-click handler (for context menu)
+logging.info("--- <Button-3> bound to show_context_menu for history Treeview ---")
 
-history_frame.grid_rowconfigure(0, weight=1)
-history_frame.grid_columnconfigure(0, weight=1)
+history_frame.grid_rowconfigure(1, weight=1) # Allow treeview row to expand
+history_frame.grid_columnconfigure(0, weight=1) # Allow treeview col to expand
 
 
 # Define tree-related functions after tree creation
@@ -1601,24 +1622,23 @@ history_frame.grid_columnconfigure(0, weight=1)
 # tree.item(item_id, tags=('win',))
 
 
-# --- Layout Management ---
+# --- Layout Management --- 
+# Configure grid weights for main layout 
+root.grid_rowconfigure(0, weight=0) # Bankroll card
+root.grid_rowconfigure(1, weight=0) # Feedback card
+root.grid_rowconfigure(2, weight=0) # Filter card
+root.grid_rowconfigure(3, weight=1) # History card (expands vertically)
 
-# Configure grid weights for main layout to center content but allow more width
-root.grid_rowconfigure(0, weight=0) # Bankroll frame row
-root.grid_rowconfigure(1, weight=0) # Upload/Stats row
-root.grid_rowconfigure(2, weight=0) # Filter/Stats row
-root.grid_rowconfigure(3, weight=1) # History/Stats row (expands vertically)
+root.grid_columnconfigure(0, weight=1) # Left spacer
+root.grid_columnconfigure(1, weight=10) # <<< Main Content Column >>>
+root.grid_columnconfigure(2, weight=1) # Right spacer
 
-root.grid_columnconfigure(0, weight=1) # << Adjusted weight for less empty space
-root.grid_columnconfigure(1, weight=10) # <<<< Give content column much more weight >>>>
-root.grid_columnconfigure(2, weight=1) # << Adjusted weight for less empty space
-
-
-# Place initial frames using grid for better control
-# Place frames in the center column (column 1)
-br_frame.grid(row=0, column=1, sticky="ew", padx=10, pady=(10, 5))
-# Initially show the main page components (these will also use column 1 via show_main_page)
-show_main_page() # This function needs modification to use column 1
+# Place initial frames using grid 
+# Add padding between cards using pady on the grid call
+br_frame.grid(row=0, column=1, sticky="ew", padx=20, pady=(10, 5))
+feedback_frame.grid(row=1, column=1, sticky="ew", padx=20, pady=5)
+league_filter_frame.grid(row=2, column=1, sticky="ew", padx=20, pady=5)
+history_frame.grid(row=3, column=1, sticky="nsew", padx=20, pady=(5, 10))
 
 # --- Initial Data Load ---
 # Ensure initial calls happen after main layout setup

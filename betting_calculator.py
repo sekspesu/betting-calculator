@@ -31,6 +31,17 @@ except Exception as e:
     messagebox.showerror("EasyOCR Error", f"Failed to initialize EasyOCR Reader: {e}\nPlease ensure EasyOCR and its dependencies (like PyTorch) are correctly installed.")
     reader = None # Set reader to None if initialization fails
 
+# --- Define Global UI Colors ---
+# Moved these definitions earlier to ensure they are available for functions
+CARD_BG_COLOR = "#3C3C3C"
+TEXT_COLOR = "#EAEAEA"
+TEXT_MUTED_COLOR = "#A0A0A0"
+WIN_COLOR = "#34C759" # <-- Changed back to Green
+LOSS_COLOR = "#FF3B30"
+ACCENT_COLOR = "#007AFF"
+BG_COLOR = "#2D2D2D" # Added main background for consistency if needed elsewhere
+# --- End Global UI Colors ---
+
 # File paths
 BANKROLL_FILE = "bankroll.txt"
 HISTORY_FILE = "betting_history.csv"
@@ -184,6 +195,8 @@ def _parse_format_original(lines):
     amount_value_pattern = re.compile(r'(\d+[.,]\d+)')
     date_pattern = re.compile(r'([A-Za-z]{3}\s+\d{1,2}\s+[A-Za-z]{3})', re.IGNORECASE)
     time_pattern = re.compile(r'(\d{2})[:.,]?(\d{2})$')
+    # Add a pattern to find "Team A vs Team B" or "Team A - Team B"
+    vs_pattern = re.compile(r'^\s*(.+?)\s+(?:vs[.]?|-)\s+(.+?)\s*$', re.IGNORECASE)
 
     # Parsing Loop (same as before)
     while i < num_lines:
@@ -197,7 +210,7 @@ def _parse_format_original(lines):
             is_ignored = any(keyword.lower() in potential_team_name.lower() for keyword in ignore_keywords)
             
             if not is_ignored:
-                team_name = potential_team_name
+                team_name_from_bet_line = potential_team_name # Store the initially found name
                 odds_str_raw = selected_match.group(2)
                 try: 
                     # ... (Odds correction and validation logic remains the same) ...
@@ -221,8 +234,28 @@ def _parse_format_original(lines):
                         continue 
                     # --- End Odds Validation ---
 
-                    logging.info(f"[Original Format] Potential Bet: Team='{team_name}', Odds={odds:.2f}")
-                    current_bet = {'team': team_name, 'odds': odds}
+                    # --- Attempt to find full matchup --- 
+                    match_display_string = team_name_from_bet_line # Default to the single team name
+                    # Look +/- 2 lines around the current bet line (i)
+                    search_start = max(0, i - 2)
+                    search_end = min(num_lines, i + 3)
+                    for k in range(search_start, search_end):
+                        vs_match = vs_pattern.match(lines[k])
+                        if vs_match:
+                            team_a = vs_match.group(1).strip()
+                            team_b = vs_match.group(2).strip()
+                            # Basic check: does one of the teams contain the betted team name?
+                            # This helps avoid grabbing unrelated matchups nearby.
+                            if team_name_from_bet_line.lower() in team_a.lower() or \
+                               team_name_from_bet_line.lower() in team_b.lower():
+                                match_display_string = f"{team_a} vs {team_b}"
+                                logging.info(f"    [Original Format] Found full matchup '{match_display_string}' on line {k}.")
+                                break # Found a likely match, stop searching
+                    # --- End find full matchup ---
+                    
+                    # Use the potentially updated match_display_string
+                    logging.info(f"[Original Format] Potential Bet: Match='{match_display_string}', Odds={odds:.2f}")
+                    current_bet = {'team': match_display_string, 'odds': odds} # Store the full string
                     found_stake = False
                     found_date = False
                     found_time = False
@@ -275,7 +308,7 @@ def _parse_format_original(lines):
                         i = last_scanned_line_idx # Jump index
                         processed_bet_on_this_line = True
                     else:
-                        logging.warning(f"[Original Format] Discarding bet (Stake missing): Team='{team_name}'")
+                        logging.warning(f"[Original Format] Discarding bet (Stake missing): Match='{match_display_string}'")
                 except ValueError: 
                     logging.warning(f"[Original Format] Could not parse odds '{odds_str_raw}'. Skipping.")
         
@@ -286,13 +319,227 @@ def _parse_format_original(lines):
     return bets
 # <<< END HELPER FUNCTION >>>
 
-# <<< Placeholder for Coolbet parser >>>
-def _parse_format_coolbet(lines):
-    logging.warning("Coolbet parsing not yet implemented.")
-    # TODO: Implement parsing logic for Coolbet format here
-    return []
-# <<< END Placeholder >>>
+# <<< NEW HELPER FUNCTION for Friend Format >>>
+def _parse_format_friend(lines):
+    """Parses bet information assuming the friend's screenshot format."""
+    logging.info("Attempting parsing using Friend Format rules...")
+    bets = []
+    num_lines = len(lines)
+    i = 0
 
+    # Regex Patterns for Friend Format
+    # Selection line: Starts with ○, captures text before the last number (odds)
+    # Allows for potential spaces around the circle symbol
+    selection_pattern = re.compile(r'^\s*○\s*(.+?)\s+([\d.,]+)\s*$', re.IGNORECASE)
+    # Stake line: Starts with Stake, captures the euro amount
+    stake_pattern = re.compile(r'^\s*Stake\s+€?([\d.,]+)\s*$', re.IGNORECASE)
+
+    while i < num_lines:
+        line = lines[i]
+        logging.debug(f"[Friend Format] Processing line {i}: '{line}'")
+        processed_bet_on_this_line = False
+
+        selection_match = selection_pattern.match(line)
+
+        if selection_match:
+            try:
+                selection_text = selection_match.group(1).strip()
+                odds_str_raw = selection_match.group(2)
+                odds_str = odds_str_raw.replace(',', '.')
+                odds = float(odds_str)
+                
+                # Validate Odds (adjust range if necessary)
+                MIN_ODDS = 1.01
+                MAX_ODDS = 50.0 # Increased max odds range slightly
+                if not (MIN_ODDS <= odds <= MAX_ODDS):
+                    logging.warning(f"    [Friend Format] Odds {odds:.2f} (from '{odds_str_raw}') invalid. Skipping partial bet.")
+                    i += 1 
+                    continue 
+
+                logging.info(f"[Friend Format] Potential Bet: Selection='{selection_text}', Odds={odds:.2f}")
+                current_bet = {'team': selection_text, 'odds': odds} # Use selection_text as 'team' for now
+                found_stake = False
+                last_scanned_line_idx = i
+                
+                # Look ahead a few lines for the Stake
+                search_end_idx = min(i + 5, num_lines) # Look max 4 lines ahead
+                j = i + 1
+                while j < search_end_idx:
+                    scan_line = lines[j]
+                    last_scanned_line_idx = j # Keep track of how far we scanned
+                    stake_match = stake_pattern.match(scan_line)
+                    if stake_match:
+                        try:
+                            stake_str_raw = stake_match.group(1)
+                            stake_str = stake_str_raw.replace(',', '.')
+                            current_bet['stake'] = float(stake_str)
+                            found_stake = True
+                            logging.info(f"    [Friend Format] Found Stake: {current_bet['stake']:.2f}")
+                            break # Stop searching once stake is found
+                        except ValueError:
+                            logging.warning(f"    [Friend Format] Failed to parse stake from '{stake_str_raw}' on line {j}")
+                            # Continue searching in case of malformed number
+                    j += 1
+
+                if found_stake:
+                    # Use current timestamp as fallback
+                    current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    # Attempt to determine league (Can use fuzzy matching later if needed)
+                    # For now, use the selection text or a default
+                    current_bet['league'] = get_team_league(selection_text) # Try to guess league
+                    if current_bet['league'] == "Other":
+                         current_bet['league'] = "Unknown League" # Default if guess fails
+                    logging.info(f"[Friend Format] Adding complete bet: {current_bet}")
+                    bets.append(current_bet)
+                    i = last_scanned_line_idx # Jump scan index past the stake line
+                    processed_bet_on_this_line = True
+                else:
+                    logging.warning(f"[Friend Format] Discarding bet (Stake not found near selection): Selection='{selection_text}'")
+
+            except ValueError:
+                logging.warning(f"[Friend Format] Could not parse odds '{selection_match.group(2)}'. Skipping line.")
+            except Exception as e:
+                logging.error(f"[Friend Format] Unexpected error parsing bet starting line {i}: {e}", exc_info=True)
+
+        if not processed_bet_on_this_line:
+            i += 1 # Move to the next line if we didn't process a bet starting here
+            
+    logging.info(f"Friend Format parsing finished. Found {len(bets)} bets.")
+    return bets
+# <<< END HELPER FUNCTION >>>
+
+# <<< NEW HELPER FUNCTION for New Site Format >>>
+def _parse_format_new_site(lines):
+    """Parses bet information assuming the new screenshot format provided."""
+    logging.info("Attempting parsing using New Site Format rules...")
+    bets = []
+    num_lines = len(lines)
+    i = 0
+
+    # --- Regex Patterns for New Site ---
+    # Update selection pattern to look for bullet • or other leading non-word char
+    # Make the leading symbol optional/general to handle OCR variations
+    selection_pattern = re.compile(r'^\s*\W?\s*(.+?)\s+([\d.,]+)\s*$', re.IGNORECASE) # Changed from ✔
+    bet_type_pattern = re.compile(r'^(Double Chance|Match Result|Over/Under)', re.IGNORECASE) 
+    stake_pattern = re.compile(r'^\s*Stake\s+€?([\d.,]+)\s*$', re.IGNORECASE)
+    ignore_words_solo = ["return", "stake", "single", "double chance", "cagliari", "fiorentina", "genoa", "lazio", "to return", "cash out"]
+
+    while i < num_lines:
+        line = lines[i]
+        logging.debug(f"[New Site Format] Processing line {i}: '{line}'")
+        processed_bet_on_this_line = False
+
+        selection_match = selection_pattern.match(line)
+
+        if selection_match:
+            try:
+                selection_text = selection_match.group(1).strip()
+                odds_str_raw = selection_match.group(2)
+                odds_str = odds_str_raw.replace(',', '.')
+                odds = float(odds_str)
+                
+                MIN_ODDS = 1.01
+                MAX_ODDS = 50.0 
+                if not (MIN_ODDS <= odds <= MAX_ODDS):
+                    logging.warning(f"    [New Site] Odds {odds:.2f} invalid. Skipping.")
+                    i += 1 
+                    continue 
+
+                logging.info(f"[New Site] Potential Bet: Selection='{selection_text}', Odds={odds:.2f}")
+                current_bet = {'selection': selection_text, 'odds': odds}
+                found_stake = False
+                found_teams = False
+                team_a = "Team A?"
+                team_b = "Team B?"
+                last_scanned_line_idx = i
+
+                search_end_idx = min(i + 8, num_lines)
+                # Remove dependency on finding bet type line first
+                # found_bet_type_line_idx = -1 
+                potential_teams = []
+                
+                # --- Find Stake and Potential Teams --- 
+                # We need stake, and try to find 2 teams in the next few lines
+                for j in range(i + 1, search_end_idx):
+                    scan_line = lines[j].strip()
+                    last_scanned_line_idx = max(last_scanned_line_idx, j)
+
+                    # Check for Stake
+                    if not found_stake:
+                        stake_match = stake_pattern.match(scan_line)
+                        if stake_match:
+                            try:
+                                stake_str = stake_match.group(1).replace(',', '.')
+                                current_bet['stake'] = float(stake_str)
+                                found_stake = True
+                                logging.info(f"    [New Site] Found Stake: {current_bet['stake']:.2f} on line {j}")
+                            except ValueError:
+                                logging.warning(f"    [New Site] Failed parse stake: '{stake_match.group(1)}' on line {j}")
+                                
+                    # Look for Teams (if we haven't found 2 already)
+                    if not found_teams:
+                        # Use the same heuristic as before, but don't wait for bet_type line
+                        if scan_line and re.search(r'[a-zA-Z]', scan_line) and \
+                           scan_line.lower() not in ignore_words_solo and \
+                           not stake_pattern.match(scan_line) and \
+                           not selection_pattern.match(scan_line): 
+
+                             cleaned_team_name = re.sub(r'(^\W+|\W+$)', '', scan_line).strip()
+                             
+                             if cleaned_team_name: 
+                                  # Basic check: Avoid adding the bet selection text itself as a team name
+                                  # Use SequenceMatcher for slightly fuzzy comparison
+                                  selection_part = selection_text.split(' or ')[0].strip() # Get primary part of selection
+                                  similarity = SequenceMatcher(None, cleaned_team_name.lower(), selection_part.lower()).ratio()
+                                  
+                                  if similarity < 0.8: # If it's not too similar to the selection
+                                       potential_teams.append(cleaned_team_name)
+                                       logging.debug(f"        [New Site] Potential team appended: '{cleaned_team_name}'")
+                                       if len(potential_teams) == 2:
+                                           team_a = potential_teams[0]
+                                           team_b = potential_teams[1]
+                                           found_teams = True
+                                           logging.info(f"    [New Site] Found potential Teams: '{team_a}' and '{team_b}'")
+                                  else:
+                                       logging.debug(f"        [New Site] Skipping potential team '{cleaned_team_name}' - too similar to selection '{selection_part}'")
+
+                    # If we found stake AND 2 teams, we can stop scanning early
+                    if found_stake and found_teams:
+                         break 
+
+                # --- Finalize Bet --- (Logic remains the same)
+                # ... existing code ...
+
+                if found_stake:
+                    if found_teams:
+                         match_display_string = f"{team_a} vs {team_b}"
+                    else:
+                         match_display_string = re.sub(r'\s+or\s+Draw$', '', selection_text, flags=re.IGNORECASE).strip()
+                         logging.warning(f"    [New Site] Teams not reliably found. Using '{match_display_string}' as Match name.")
+                    
+                    current_bet['team'] = match_display_string
+                    current_bet['league'] = get_team_league(team_a if found_teams else match_display_string)
+                    if current_bet['league'] == "Other": current_bet['league'] = "Unknown League"
+                    current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] 
+                    
+                    logging.info(f"[New Site] Adding complete bet: {current_bet}")
+                    bets.append(current_bet)
+                    i = last_scanned_line_idx 
+                    processed_bet_on_this_line = True
+                else:
+                    logging.warning(f"[New Site] Discarding bet (Stake missing): Selection='{selection_text}'")
+
+            except ValueError:
+                logging.warning(f"[New Site] Could not parse odds '{selection_match.group(2)}'. Skipping line.")
+            except Exception as e:
+                logging.error(f"[New Site] Unexpected error parsing bet line {i}: {e}", exc_info=True)
+
+        if not processed_bet_on_this_line:
+            i += 1
+            
+    logging.info(f"New Site Format parsing finished. Found {len(bets)} bets.")
+    return bets
+# <<< END HELPER FUNCTION >>>
 
 def extract_bet_info(image_path):
     """Extracts bet info by detecting format and calling the appropriate parser."""
@@ -319,48 +566,96 @@ def extract_bet_info(image_path):
 
         # --- Format Detection Logic --- 
         detected_format = None
-        # Simple detection for now: Check for "Stake" label vs "Team - Team" structure
+        bets = None # Initialize bets to None
+        
+        # --- Heuristics Check --- 
         text_lower = text.lower()
-        has_stake_label = re.search(r'\bstake\b', text_lower) is not None
-        # Pattern for "Team A - Team B" (allows various characters in names)
-        # Corrected regex: pass re.MULTILINE as a flag argument
-        team_vs_team_pattern = r'^(.+?)\s+-\s+(.+?)$'
+        lines_lower = [l.lower() for l in lines]
+        
+        # --- New Site Format Specifics (Checkmark or Bullet) ---
+        new_site_selection_pattern = r'^\s*\W?\s*(.+?)\s+[\d.,]+\s*$' # Looser check for selection line
+        has_new_site_selection = re.search(new_site_selection_pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
+        has_bet_type_line = any(re.match(r'^(double chance|match result|over/under)', l) for l in lines_lower)
+        has_new_site_stake = re.search(r'^stake\s+€?[\d.,]+', text_lower, flags=re.MULTILINE) is not None
+        new_site_format_likely = has_new_site_selection and has_bet_type_line and has_new_site_stake
+
+        # --- Friend Format Specifics ---
+        # Restore Friend Format Check
+        friend_format_likely = False
+        try:
+            for i, line in enumerate(lines_lower):
+                if line.strip().startswith('○'):
+                    search_end = min(i + 5, len(lines_lower))
+                    for j in range(i + 1, search_end):
+                        if re.match(r'^\s*stake\s+€[\d.,]+', lines_lower[j]):
+                            friend_format_likely = True
+                            break
+                    if friend_format_likely:
+                        break
+        except Exception as e:
+             logging.warning(f"Error during Friend format heuristic check: {e}")
+             friend_format_likely = False
+
+        # --- Coolbet Format Specifics: ---
+        # Restore Coolbet Format Check
+        team_vs_team_pattern = r'^(.+?)\s+-\s+(.+?)$' 
         has_team_vs_team = re.search(team_vs_team_pattern, text, flags=re.MULTILINE) is not None 
         has_match_result_line = "match result (1x2)" in text_lower
+        coolbet_format_likely = has_team_vs_team and has_match_result_line
+        
+        # --- Original Format Specifics (Less precise): ---
+        has_original_stake_label = 'stake' in text_lower 
 
-        logging.debug(f"Format detection: has_stake_label={has_stake_label}, has_team_vs_team={has_team_vs_team}, has_match_result_line={has_match_result_line}")
+        logging.debug(f"Format detection heuristics: new_site_likely={new_site_format_likely}, friend_likely={friend_format_likely}, coolbet_likely={coolbet_format_likely}, has_original_stake={has_original_stake_label}")
 
-        if has_stake_label and not (has_team_vs_team and has_match_result_line):
-            # Likely original format if "Stake" is present and typical Coolbet structure isn't
+        # --- Apply Detection Rules (Adjusted Order) ---
+        # Prioritize the more specific new format
+        if new_site_format_likely:
+            detected_format = "New Site"
+            bets = _parse_format_new_site(lines)
+        elif friend_format_likely:
+            detected_format = "Friend"
+            bets = _parse_format_friend(lines)
+        elif coolbet_format_likely:
+            detected_format = "Coolbet"
+            bets = _parse_format_coolbet(lines)
+        elif has_original_stake_label:
             detected_format = "Original"
             bets = _parse_format_original(lines)
-        elif has_team_vs_team and has_match_result_line:
-            # Likely Coolbet format if Team-Team and Match Result line are present
-            detected_format = "Coolbet"
-            bets = _parse_format_coolbet(lines) # Call placeholder for now
         else:
-            # Could be original format *without* a visible Stake label, or another format
-            # Let's try original first as a fallback if unsure?
-            logging.warning("Could not reliably detect format. Trying Original format as fallback...")
-            detected_format = "Original (Fallback)"
-            bets = _parse_format_original(lines)
+            # Fallback: Try all parsers if no specific format detected clearly
+            logging.warning("Could not reliably detect format based on primary heuristics. Trying fallbacks...")
+            # Try New Site first in fallback?
+            detected_format = "New Site (Fallback)"
+            bets = _parse_format_new_site(lines)
             if not bets:
-                logging.warning("Fallback Original format parsing failed. Attempting Coolbet format...")
-                detected_format = "Coolbet (Fallback)"
-                bets = _parse_format_coolbet(lines) # Call placeholder
+                detected_format = "Friend (Fallback)"
+                bets = _parse_format_friend(lines)
+                if not bets:
+                     detected_format = "Original (Fallback)"
+                     bets = _parse_format_original(lines)
+                     if not bets:
+                          detected_format = "Coolbet (Fallback)"
+                          bets = _parse_format_coolbet(lines)
         
         # --- Process results --- 
         if bets:
             logging.info(f"Successfully extracted {len(bets)} bets using {detected_format} parser.")
-            feedback_text = f"Found {len(bets)} bet(s) ({detected_format}):\n"
+            # Update feedback based on number of bets found
+            if len(bets) == 1:
+                 feedback_text = f"Found 1 bet ({detected_format}):\n"
+            else:
+                 feedback_text = f"Found {len(bets)} bets ({detected_format}):\n"
+            # Display details of each found bet
             for b in bets:
-                 feedback_text += f"• {b.get('team','N/A')} ({b.get('odds',0):.2f})\n  Stake: €{b.get('stake',0):.2f} Time: {b.get('datetime', 'N/A')}\n"
-            feedback_label.config(text=feedback_text)
+                 feedback_text += f"• {b.get('team','N/A')} ({b.get('odds',0):.2f}) | Stake: €{b.get('stake',0):.2f} | L: {b.get('league','?')} | T: {b.get('datetime', 'N/A')}\n" # Added League + Timestamp
+            feedback_label.config(text=feedback_text.strip()) # Remove trailing newline
             return bets
         else:
-            logging.warning(f"No valid bets found using {detected_format} parser.")
-            preview = "\n".join(lines[:15])
-            feedback_label.config(text=f"No valid bets found ({detected_format}). Preview:\n{preview}")
+            # Log failure and show preview
+            logging.warning(f"No valid bets found using {detected_format} parser(s).")
+            preview = "\n".join(lines[:15]) # Show first 15 lines
+            feedback_label.config(text=f"No valid bets found. Parser: {detected_format}. Preview:\n{preview}")
             return None
             
     # ... (rest of the except blocks remain the same) ...
@@ -491,64 +786,93 @@ def add_bet(match, odds, stake, bet_datetime_str):
         logging.info(f"Added bet: {match} ({league}), Odds: {odds:.2f}, Stake: €{stake:.2f}, Date: {bet_datetime_str}")
     
 # Modify update_history_table to handle the potentially more precise datetime
-def update_history_table(filtered_df=None):
-    """Updates the Treeview with bet history, applying styles and formatting."""
+def update_history_table(filtered_df=None, show_only_today: bool = False):
+    """Updates the Treeview with bet history, applying styles and formatting.
+
+    Args:
+        filtered_df (pd.DataFrame, optional): A pre-filtered DataFrame (e.g., by league).
+                                             If provided, show_only_today is ignored. Defaults to None.
+        show_only_today (bool, optional): If True and filtered_df is None, only show bets from today.
+                                          Defaults to False.
+    """
     for item in tree.get_children():
         tree.delete(item)
 
-    # Determine the DataFrame to display (either full history or filtered)
-    display_df = filtered_df if filtered_df is not None else history.copy()
+    # Determine the base DataFrame to display
+    base_df = history.copy() # Start with the full history
 
-    # --- Filter to show only today's bets in the Treeview --- 
-    if filtered_df is None: # Only apply daily filter if not already filtered (e.g., by league)
+    # Apply filtering: League filter takes precedence
+    display_df = None
+    if filtered_df is not None:
+        display_df = filtered_df # Use the league-filtered data
+        logging.info("Displaying league-filtered data in Treeview.")
+    elif show_only_today: # Apply daily filter only if no league filter and flag is True
+        logging.info("Attempting to filter Treeview for today's bets...")
         try:
             # Ensure Date_dt column exists or create it for filtering
-            if 'Date_dt' not in display_df.columns:
-                if 'Date' in display_df.columns:
-                    display_df['Date_dt'] = pd.to_datetime(display_df['Date'], errors='coerce', format='mixed')
-                    if display_df['Date_dt'].isnull().all():
-                        logging.warning("Created 'Date_dt' column, but all values are NaT. Cannot filter by day.")
+            if 'Date_dt' not in base_df.columns:
+                if 'Date' in base_df.columns:
+                    # Use the correct format directly
+                    base_df['Date_dt'] = pd.to_datetime(base_df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+                    # Remove the fallback to mixed format as we know the expected one
+                    # if base_df['Date_dt'].isnull().any():
+                    #     logging.warning("Failed to parse some dates with standard format, trying mixed.")
+                    #     base_df['Date_dt'] = pd.to_datetime(base_df['Date'], errors='coerce', format='mixed')
+
+                    if base_df['Date_dt'].isnull().all():
+                        logging.error("Created 'Date_dt' column, but all values are NaT after parsing. Cannot filter by day.")
                     else:
                          logging.debug("Created 'Date_dt' column for daily filtering.")
                 else:
-                    logging.warning("Cannot filter by day: 'Date'/'Date_dt' columns missing.")
+                    logging.error("Cannot filter by day: 'Date'/'Date_dt' columns missing.")
                     # Proceed without filtering if no date column exists
 
             # Apply the filter if Date_dt is usable
-            if 'Date_dt' in display_df.columns and not display_df['Date_dt'].isnull().all():
+            if 'Date_dt' in base_df.columns and not base_df['Date_dt'].isnull().all():
                 today_date = pd.Timestamp.now().normalize() # Get today's date (midnight)
+                logging.debug(f"Filtering for date: {today_date}")
                 # Keep rows where the date part of Date_dt matches today
-                display_df = display_df[display_df['Date_dt'].dt.normalize() == today_date].copy() # Use .copy() to avoid SettingWithCopyWarning
-                logging.info(f"Filtered Treeview to show only bets from {today_date.strftime('%Y-%m-%d')}. {len(display_df)} rows displayed.")
-            # else: Logging handles cases where filtering isn't possible
+                mask = base_df['Date_dt'].dt.normalize() == today_date
+                display_df = base_df[mask].copy() # Use .copy() to avoid SettingWithCopyWarning
+                logging.info(f"Filtered Treeview to show {len(display_df)} bets from {today_date.strftime('%Y-%m-%d')}.")
+                if display_df.empty:
+                    logging.info("No bets found for today.")
+            else:
+                # Logged errors above if Date_dt couldn't be created or used
+                logging.warning("Proceeding without daily filter due to missing or unparseable date data.")
+                display_df = base_df # Show all if filtering failed
 
         except Exception as e:
             logging.error(f"Error during daily filtering in update_history_table: {e}. Displaying unfiltered data for safety.")
-    # --- End Daily Filter ---
+            display_df = base_df # Show all as a fallback
+    else:
+        # No league filter and show_only_today is False
+        display_df = base_df # Show all history
+        logging.info("Displaying all bets (no league filter, show_only_today=False).")
 
-    # --- Safely create Date_dt for sorting (if not already created/present) --- 
-    # Sort ONLY by Date_dt (descending) to preserve screenshot order
-    sort_columns = [] 
-    sort_ascending = []
-    
+    # If after all filtering, display_df is still None (shouldn't happen ideally), default to base_df
+    if display_df is None:
+        logging.warning("display_df was None unexpectedly, defaulting to full history.")
+        display_df = base_df
+
+    # --- Safely create Date_dt for sorting ---
     if 'Date' in display_df.columns:
         try:
-            # Attempt to convert 'Date' to datetime objects
-            # Try parsing with milliseconds first, then fallback
-            try:
-                date_dt_col = pd.to_datetime(display_df['Date'], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
-                logging.debug("Parsed Date column with milliseconds format.")
-            except (ValueError, TypeError):
-                 logging.debug("Millisecond format failed, trying mixed format for Date column.")
-                 date_dt_col = pd.to_datetime(display_df['Date'], errors='coerce', format='mixed')
+            # Use the correct format directly for sorting as well
+            date_dt_col = pd.to_datetime(display_df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+            # Remove the try/except for millisecond format
+            # try:
+            #     date_dt_col = pd.to_datetime(display_df['Date'], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+            #     logging.debug("Parsed Date column with milliseconds format.")
+            # except (ValueError, TypeError):
+            #      logging.debug("Millisecond format failed, trying mixed format for Date column.")
+            #      date_dt_col = pd.to_datetime(display_df['Date'], errors='coerce', format='mixed')
                  
-            # Check if *any* dates were successfully parsed
             if not date_dt_col.isnull().all():
                 display_df['Date_dt'] = date_dt_col
-                # Sort ONLY by date (most recent first)
                 sort_columns = ['Date_dt'] 
                 sort_ascending = [False] 
-                logging.debug("Sorting history table primarily by Date_dt (desc) to preserve screenshot order.")
+                logging.debug("Sorting history table primarily by Date_dt (desc).") # Simplified log
             else:
                  logging.warning("Could not parse any dates in 'Date' column for sorting. Order might be unpredictable.")
         except Exception as e:
@@ -592,12 +916,17 @@ def update_history_table(filtered_df=None):
              except (ValueError, TypeError):
                  pass 
         
-        # Determine tags based on result
+        # Determine tags based on result and prepare action symbols
         tags = []
-        # Now we can safely use 'result'
+        win_symbol = "" # Blank by default
+        loss_symbol = "" # Blank by default
+        delete_symbol = "🗑️" # Always show delete symbol
+        
         if result == "Pending":
             tags.append('pending')
             payout_str = "€0.00"
+            win_symbol = "✅" # Show Win symbol for pending
+            loss_symbol = "❌" # Show Loss symbol for pending
         elif result == "Win":
             tags.append('win')
             payout_str = f"+€{payout:.2f}" if payout > 0 else f"+€{stake * odds:.2f}"
@@ -605,20 +934,21 @@ def update_history_table(filtered_df=None):
             tags.append('loss')
             payout_str = f"-€{stake:.2f}"
         else: 
-             tags.append('pending')
+             tags.append('pending') # Default tag
              payout_str = f"€{payout:.2f}"
 
         # Format values for display
         odds_str = f"{odds:.2f}"
         stake_str = f"€{stake:.2f}"
-        action_text = "✅ / ❌" if result == "Pending" else ""
-        delete_symbol = "🗑️"
         
-        # Insert item, including the DataFrame index as the LAST value
+        # Insert item with NEW columns
         item_id = tree.insert("", "end", values=(
             match_name, league, odds_str, stake_str, result,
-            payout_str, display_date, action_text, delete_symbol,
-            df_index # <<< Add DataFrame index here
+            payout_str, display_date, 
+            win_symbol,  # New Win column value
+            loss_symbol, # New Loss column value
+            delete_symbol, # Delete column value
+            df_index # Hidden DataFrame index
         ), tags=tuple(tags)) # Apply initial tags
 
         # Apply striping 
@@ -684,102 +1014,121 @@ def update_bet_result(selected_item_id, result):
         save_history(history)
         br_label.config(text=f"Bankroll: €{bankroll:.2f}")
         
-        update_history_table() # Refresh the table to show changes
+        update_history_table(show_only_today=True) # <<< Refresh main table showing today's bets
         feedback_label.config(text=f"Updated: {match_name} - {result}. Bankroll: €{bankroll:.2f}")
         logging.info(f"Updated bet result: {match_name} - {result}. New Bankroll: €{bankroll:.2f}")
-        
+        update_stats_display() # Update stats page as well
+    except ValueError as e:
+        messagebox.showerror("Update Error", f"Error processing values: {e}\nPlease check bet details.")
+        logging.error(f"ValueError updating bet result: {e}")
+    except IndexError:
+        messagebox.showerror("Update Error", "Could not find the bet in the history data. It might have been deleted or modified unexpectedly.")
+        logging.error(f"IndexError: Could not find the bet corresponding to tree item {selected_item_id} in the history DataFrame.")
     except Exception as e:
-        logging.error(f"Error updating bet result for {selected_item_id}: {e}")
-        messagebox.showerror("Error", f"Failed to update bet result: {e}")
+        messagebox.showerror("Update Error", f"An unexpected error occurred: {e}")
+        logging.exception(f"Unexpected error updating bet result for item {selected_item_id}: {e}")
 
 def delete_selected_bet(selected_item_id):
-    """Deletes the selected bet from history using its DataFrame index."""
-    # --- Enhanced Logging Start --- 
-    logging.info(f"--- delete_selected_bet initiated for Treeview item: {selected_item_id} ---")
-    global history, bankroll
-    
-    # Log initial history size
-    logging.debug(f"  History size BEFORE delete attempt: {len(history)}")
-    logging.debug(f"  History indices BEFORE delete attempt: {history.index.tolist()}")
-    
+    """Deletes the selected bet from the Treeview and history."""
+    logging.debug(f"delete_selected_bet called for item: {selected_item_id}")
+    # --- Defensive global access for UI constants (in case of weird scope issue in exception) ---
+    global CARD_BG_COLOR, BG_COLOR, TEXT_COLOR, ACCENT_COLOR, WIN_COLOR, LOSS_COLOR, TEXT_MUTED_COLOR # Added more potential constants
+    # ---
+    global history
     try:
         item_values = tree.item(selected_item_id)['values']
-        logging.info(f"  Retrieved item values: {item_values}")
+        # Make sure we get the DataFrame index stored as the *last* value
+        # Check if length is less than 11 (since index is the 11th item, index 10)
+        if len(item_values) < 11: 
+            logging.error(f"Cannot delete: DataFrame index missing or item_values too short: {item_values}")
+            messagebox.showerror("Delete Error", "Internal error: Cannot identify row to delete (invalid item values).")
+            return
         
-        # --- Retrieve DataFrame index from Treeview --- 
-        df_index_to_delete = None # Initialize
+        # Access the 11th element (index 10) for the DataFrame index
+        df_index_to_delete = item_values[10] 
+        logging.debug(f"Attempting to delete row with DataFrame index: {df_index_to_delete}")
+
+        # --- Convert extracted index to integer for comparison with DataFrame index ---
+        # The DataFrame index is usually integer-based.
         try:
-            # Assuming 'Index' is the 10th value (index 9)
-            df_index_to_delete = int(item_values[9]) 
-            logging.info(f"  Extracted DataFrame index from Treeview: {df_index_to_delete}")
-        except (IndexError, ValueError, TypeError) as e:
-            logging.error(f"  ERROR retrieving DataFrame index (index 9) from Treeview values ({item_values}): {e}")
-            messagebox.showerror("Delete Error", "Could not identify the bet's internal ID.")
+            df_index_to_delete = int(df_index_to_delete)
+        except (ValueError, TypeError) as e:
+            logging.error(f"Delete Error: Could not convert extracted index '{df_index_to_delete}' to an integer: {e}")
+            messagebox.showerror("Delete Error", f"Internal error: Invalid index type '{type(df_index_to_delete).__name__}' found.")
             return
+        # --- End Conversion ---
 
-        # --- Verify index exists in current history DataFrame --- 
-        index_exists = df_index_to_delete in history.index
-        logging.info(f"  Checking if index {df_index_to_delete} exists in history.index: {index_exists}")
-        if not index_exists:
-            logging.error(f"  DataFrame index {df_index_to_delete} NOT FOUND in current history DataFrame indices: {history.index.tolist()}")
-            messagebox.showerror("Delete Error", "Bet not found in history (it might have been deleted already or data is out of sync).")
-            update_history_table() # Refresh table to reflect current state
-            return
+        if df_index_to_delete not in history.index:
+             logging.error(f"Delete Error: Index {df_index_to_delete} not found in history DataFrame indices: {history.index.tolist()}")
+             # Maybe refresh and see if it disappears?
+             update_history_table(show_only_today=True)
+             messagebox.showerror("Delete Error", "Could not find the selected bet in the history data. It might have already been deleted.")
+             return
 
-        # --- Get necessary data directly from DataFrame using the index --- 
-        logging.debug(f"  Accessing history.loc[{df_index_to_delete}]...")
-        original_row = history.loc[df_index_to_delete]
-        original_result = original_row["Result"]
-        original_payout = float(original_row["Payout"]) # Ensure float
-        original_stake = float(original_row["Stake"])   # Ensure float
-        match_name = original_row["Match"] # Get name for feedback msg
-        logging.info(f"  Data for index {df_index_to_delete}: Result={original_result}, Payout={original_payout}, Stake={original_stake}")
+        # Get bet details *before* deleting for feedback
+        deleted_row = history.loc[df_index_to_delete]
+        match_name = deleted_row.get('Match', 'N/A')
+        stake = deleted_row.get('Stake', 0.0)
+        result = deleted_row.get('Result', 'Pending')
 
-        # --- Reverse bankroll impact ONLY if bet was completed --- 
-        # (Bankroll adjustment logic remains the same)
-        if original_result == "Win":
-            bankroll -= original_payout 
-            logging.info(f"Deleting Won Bet: Reversing bankroll impact by -€{original_payout:.2f}")
-        elif original_result == "Loss":
-            bankroll += original_stake 
-            logging.info(f"Deleting Lost Bet: Reversing bankroll impact by +€{original_stake:.2f}")
-        else: 
-             logging.info(f"Deleting Pending/Other status bet ({original_result}). No bankroll adjustment needed.")
-    
-        # --- Remove from history DataFrame using the direct index --- 
-        logging.info(f"  Attempting to drop index {df_index_to_delete} from history...")
-        history = history.drop(index=df_index_to_delete).reset_index(drop=True)
-        logging.info(f"  Index {df_index_to_delete} dropped. New history size: {len(history)}")
-        logging.debug(f"  History indices AFTER drop: {history.index.tolist()}") # Should be renumbered from 0
+        # --- Bankroll Adjustment Logic --- 
+        # ... (Bankroll adjustment logic remains the same) ...
+        if result == "Win":
+            payout = deleted_row.get("Payout", 0.0)
+            try:
+                 payout_num = float(payout)
+                 adjust_bankroll(-payout_num) # Subtract the payout from bankroll
+                 logging.info(f"Deleting WON bet. Bankroll adjusted by -€{payout_num:.2f}")
+            except ValueError:
+                 logging.warning(f"Could not parse payout '{payout}' for bankroll adjustment on deleting won bet.")
+        elif result == "Loss":
+             logging.info("Deleting LOST bet. No bankroll adjustment needed.")
+        elif result == "Pending":
+            try:
+                 stake_num = float(stake)
+                 adjust_bankroll(stake_num)
+                 logging.info(f"Deleting PENDING bet. Stake €{stake_num:.2f} added back to bankroll.")
+            except ValueError:
+                 logging.warning(f"Could not parse stake '{stake}' for bankroll adjustment on deleting pending bet.")
+        else:
+             logging.warning(f"Deleting bet with unknown result '{result}'. Bankroll not adjusted.")
+
+        # Drop the row from the DataFrame using the direct index
+        history = history.drop(df_index_to_delete)
+        logging.info(f"Successfully dropped row with index {df_index_to_delete} from history DataFrame.")
         
-        # --- Save changes --- 
-        logging.debug("  Saving bankroll and history...")
-        save_bankroll(bankroll)
+        # Save the updated history
         save_history(history)
-        logging.debug("  Save complete.")
         
-        # --- Update UI --- 
-        logging.debug("  Updating UI (bankroll label, history table, feedback label)...")
-        br_label.config(text=f"Bankroll: €{bankroll:.2f}")
-        update_history_table() # Refresh table view
+        # Refresh the Treeview (showing today's bets on the main page)
+        update_history_table(show_only_today=True) # <<< Refresh main table showing today's bets
+        update_league_filter() # Update league list in case the deleted bet was the last of its league
+        
         feedback_label.config(text=f"Deleted bet: {match_name}")
-        logging.info(f"--- Successfully deleted bet: {match_name} (Index was: {df_index_to_delete}). Bankroll: €{bankroll:.2f} ---")
+        logging.info(f"Deleted bet: {match_name} (Index: {df_index_to_delete})")
         
-    except KeyError as ke:
-         # Specific handling if .loc fails even after index check (shouldn't happen often)
-         logging.error(f"KeyError accessing history.loc[{df_index_to_delete}] even after index check: {ke}", exc_info=True)
-         messagebox.showerror("Delete Error", f"Error accessing bet data (Index: {df_index_to_delete}). Data might be inconsistent.")
+        # Update stats display as deletion affects stats
+        update_stats_display()
+
+    except IndexError:
+        # This might happen if the item was already removed from the tree somehow
+        logging.warning(f"IndexError retrieving item values for {selected_item_id}. Item might no longer exist.")
+        # Attempt a refresh just in case
+        update_history_table(show_only_today=True)
     except Exception as e:
-        logging.error(f"--- ERROR during delete_selected_bet for item {selected_item_id} (index {df_index_to_delete}): {e} ---", exc_info=True)
-        messagebox.showerror("Error", f"Failed to delete bet: {e}")
+        # This is the block where the error likely originates if messagebox is involved
+        logging.exception(f"Unexpected error deleting bet for item {selected_item_id}: {e}")
+        try:
+            # Explicitly try showing the messagebox after potential error
+            messagebox.showerror("Delete Error", f"An unexpected error occurred: {e}")
+        except Exception as me:
+             # Log if even the messagebox fails
+             logging.error(f"CRITICAL: Failed to show error messagebox during delete: {me}")
 
 def on_tree_click(event):
-    """Handles left-clicks on the Treeview, specifically for action/delete cells."""
-    # --- VERY FIRST LOG: Check if function is called at all --- 
+    """Handles left-clicks on the Treeview based on the clicked column."""
     logging.info(f"*** on_tree_click function CALLED at ({event.x}, {event.y}) ***")
     
-    # ... (rest of the function: logging, identification, logic) ...
-    logging.debug(f"on_tree_click triggered at ({event.x}, {event.y})")
     region = tree.identify("region", event.x, event.y)
     column_id = tree.identify_column(event.x)
     selected_item_id = tree.identify_row(event.y)
@@ -787,15 +1136,14 @@ def on_tree_click(event):
     
     if region == "cell" and selected_item_id and column_id:
         try:
+             # Get the 0-based index from the column ID (e.g., #8 -> 7)
              column_index = int(column_id.replace('#', '')) - 1
              logging.debug(f"  Calculated column index: {column_index}")
         except ValueError:
              logging.warning("  Could not determine column index from column_id.")
              return
              
-        if not selected_item_id: return # No item clicked
-        
-        # --- Get item values early for debugging --- 
+        # --- Get item values --- 
         item_values = None
         try:
             item_values = tree.item(selected_item_id)['values']
@@ -804,75 +1152,61 @@ def on_tree_click(event):
              logging.error(f"  Failed to get item values for {selected_item_id}: {e}")
              return # Cannot proceed without item values
         
-        # Check if item_values is valid (not None and not empty)
-        if not item_values:
-            logging.warning(f"  Item values list is empty or None for {selected_item_id}. Aborting click action.")
+        if not item_values or len(item_values) < 11: # Check length for new column count
+            logging.warning(f"  Item values list invalid (None, empty, or too short) for {selected_item_id}. Aborting click action.")
             return
-        
-        # --- Check for Delete Column Click FIRST --- 
-        if column_index == 8:  # Delete column (index 8)
-            logging.info(f"--> Delete column ({column_index}) clicked for item: {selected_item_id}")
-            # --- Log the values just before calling delete --- 
-            logging.info(f"    Values associated with item {selected_item_id}: {item_values}")
-            # Check if index exists at position 9 before calling delete
-            if len(item_values) > 9:
-                 logging.info(f"    Index value at item_values[9]: {item_values[9]}")
-            else:
-                 logging.warning(f"    Item values list has length {len(item_values)}, expected > 9. Index might be missing.")
-                 
-            delete_selected_bet(selected_item_id)
-            return # Action completed, exit function
 
-        # --- Check for Actions Column Click (Only if Result is Pending) --- 
-        if column_index == 7: # Actions column (index 7)
-            try:
-                current_result = item_values[4] # Get result from values
-            except IndexError:
-                logging.error(f"Could not get result (index 4) from item_values: {item_values}")
-                return
-                
+        # --- Determine Action Based on Clicked Column Index --- 
+        # IMPORTANT: Adjust these indices if you reorder columns in the setup
+        win_column_index = 7  # Index of "Win ✅"
+        loss_column_index = 8 # Index of "Loss ❌"
+        delete_column_index = 9 # Index of "Delete 🗑️"
+
+        current_result = item_values[4] # Result is at index 4
+
+        if column_index == delete_column_index:
+            logging.info(f"--> Delete column ({column_index}) clicked for item: {selected_item_id}")
+            delete_selected_bet(selected_item_id)
+            return
+
+        elif column_index == win_column_index:
+            logging.debug(f"  Win column ({column_index}) clicked for item {selected_item_id}.")
             if current_result == "Pending":
-                logging.debug("  Click detected in Actions column for Pending bet.")
-                cell_box = tree.bbox(selected_item_id, column=column_id)
-                if cell_box:
-                     relative_x = event.x - cell_box[0]
-                     # Determine if click was on Win (left) or Loss (right) part
-                     if relative_x < cell_box[2] / 2:
-                         logging.debug(f"  Calling update_bet_result (Win) for item: {selected_item_id}")
-                         update_bet_result(selected_item_id, "Win")
-                     else:
-                         logging.debug(f"  Calling update_bet_result (Loss) for item: {selected_item_id}")
-                         update_bet_result(selected_item_id, "Loss")
-                     return # Action completed, exit function
-                else: 
-                     logging.warning("  Could not get cell bbox for Actions column.")
+                logging.info(f"    Marking bet as WIN. Calling update_bet_result(Win).")
+                update_bet_result(selected_item_id, "Win")
             else:
-                logging.debug(f"  Click in Actions column ignored (Result is '{current_result}')")
-        # --- If click was not in Delete or actionable Actions column --- 
+                logging.debug(f"    Ignoring click on Win column because result is '{current_result}'.")
+            return
+            
+        elif column_index == loss_column_index:
+            logging.debug(f"  Loss column ({column_index}) clicked for item {selected_item_id}.")
+            if current_result == "Pending":
+                logging.info(f"    Marking bet as LOSS. Calling update_bet_result(Loss).")
+                update_bet_result(selected_item_id, "Loss")
+            else:
+                logging.debug(f"    Ignoring click on Loss column because result is '{current_result}'.")
+            return
+
         else:
-            logging.debug(f"  Click was in column {column_index}, not actionable.")
+            # Log clicks in other columns (Match, League, etc.)
+            logging.debug(f"  Click was in non-actionable column (Index: {column_index}). No action taken.")
+            # You could add selection logic here if desired
 
 def show_context_menu(event):
     """Displays a right-click context menu for the selected Treeview item."""
-    logging.debug(f"show_context_menu triggered at ({event.x_root}, {event.y_root})") # Log entry
+    logging.debug(f"show_context_menu triggered at ({event.x_root}, {event.y_root})") 
     selected_item_id = tree.identify_row(event.y)
-    logging.debug(f"  Identified item for context menu: {selected_item_id}") # Log item
+    logging.debug(f"  Identified item for context menu: {selected_item_id}")
     if selected_item_id:
         tree.selection_set(selected_item_id) # Select the row under the cursor
         menu = tk.Menu(root, tearoff=0, bg="#424242", fg="#E0E0E0", 
                        activebackground="#616161", activeforeground="#FFFFFF")
-        item_values = tree.item(selected_item_id)['values']
-        result = item_values[4]
         
-        if result == "Pending":
-            # Log command calls
-            menu.add_command(label="Mark as Win", 
-                           command=lambda id=selected_item_id: (logging.debug(f"Context menu: Calling update_bet_result({id}, Win)"), update_bet_result(id, "Win")))
-            menu.add_command(label="Mark as Loss", 
-                           command=lambda id=selected_item_id: (logging.debug(f"Context menu: Calling update_bet_result({id}, Loss)"), update_bet_result(id, "Loss")))
-            menu.add_separator()
-        
-        # Remove confirmation from context menu delete action
+        # Add Edit Option
+        menu.add_command(label="Edit Bet", 
+                         command=lambda id=selected_item_id: (logging.debug(f"Context menu: Calling open_edit_bet_dialog({id})"), open_edit_bet_dialog(id)))
+        menu.add_separator()
+        # Existing Delete Option
         menu.add_command(label="Delete Bet", 
                         command=lambda id=selected_item_id: (logging.debug(f"Context menu: Calling delete_selected_bet({id})"), delete_selected_bet(id)))
         try:
@@ -880,520 +1214,595 @@ def show_context_menu(event):
         finally:
             menu.grab_release()
 
+# --- Function to open Edit Bet Dialog --- 
+def open_edit_bet_dialog(selected_item_id):
+    """Opens a dialog window to edit the selected bet."""
+    logging.debug(f"Opening edit dialog for item: {selected_item_id}")
+    global history
+    try:
+        item_values = tree.item(selected_item_id)['values']
+        # Ensure DataFrame index is present and valid
+        if len(item_values) < 11: 
+             logging.error(f"Cannot edit: DataFrame index missing or item_values too short: {item_values}")
+             messagebox.showerror("Edit Error", "Internal error: Cannot identify row to edit.")
+             return
+             
+        df_index = item_values[10] # Get the DataFrame index
+        df_index = int(df_index) # Convert to integer
+
+        if df_index not in history.index:
+             logging.error(f"Edit Error: Index {df_index} not found in history DataFrame for item {selected_item_id}.")
+             messagebox.showerror("Edit Error", "Could not find the selected bet in the data. It might have been deleted.")
+             update_history_table(show_only_today=True) # Refresh table
+             return
+
+        # Get current data directly from the DataFrame for accuracy
+        current_data = history.loc[df_index].to_dict()
+        logging.debug(f"  Current data for index {df_index}: {current_data}")
+
+    except (ValueError, TypeError, KeyError, IndexError) as e:
+        logging.error(f"Error retrieving data for edit dialog (item: {selected_item_id}): {e}")
+        messagebox.showerror("Edit Error", "Could not retrieve bet data. Please try again.")
+        return
+
+    # --- Create Dialog Window --- 
+    dialog = tk.Toplevel(root)
+    dialog.title("Edit Bet")
+    dialog.configure(bg="#313131") 
+    dialog.resizable(False, False)
+    dialog.transient(root) 
+    dialog.grab_set()
+
+    # Center dialog (Helper function or inline code needed)
+    # Simplified centering for now:
+    root.update_idletasks()
+    dialog.update_idletasks()
+    # Define approximate size BEFORE calculating position
+    dialog_width_approx = 450 
+    dialog_height_approx = 350 
+    x = root.winfo_x() + (root.winfo_width() // 2) - (dialog_width_approx // 2)
+    y = root.winfo_y() + (root.winfo_height() // 2) - (dialog_height_approx // 2)
+    dialog.geometry(f'{dialog_width_approx}x{dialog_height_approx}+{x}+{y}') 
+
+    # --- Dialog Content --- 
+    content_frame = tk.Frame(dialog, bg="#313131", padx=15, pady=15)
+    content_frame.pack(expand=True, fill="both")
+    content_frame.grid_columnconfigure(1, weight=1) # Allow entry column to expand
+
+    # Variables to hold entry data
+    entry_vars = {
+        'match': tk.StringVar(value=current_data.get('Match', '')),
+        'league': tk.StringVar(value=current_data.get('League', 'Other')),
+        'odds': tk.StringVar(value=str(current_data.get('Odds', ''))),
+        'stake': tk.StringVar(value=f"€{current_data.get('Stake', 0.0):.2f}"),
+        'result': tk.StringVar(value=current_data.get('Result', 'Pending')),
+        'date': tk.StringVar(value=current_data.get('Date', '')) # Store raw date string
+    }
+
+    row_idx = 0
+    # Match
+    ttk.Label(content_frame, text="Match:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    match_entry = ttk.Entry(content_frame, textvariable=entry_vars['match'], width=40)
+    match_entry.grid(row=row_idx, column=1, sticky="ew", pady=5, padx=5)
+    row_idx += 1
+    
+    # League
+    ttk.Label(content_frame, text="League:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    # Populate league options dynamically
+    known_leagues = sorted(list(set(l for l in history['League'].unique() if pd.notna(l) and l and l != 'Other'))) # Get unique known leagues from history
+    league_options = ["Other"] + known_leagues 
+    current_league = current_data.get('League', 'Other')
+    if current_league not in league_options:
+        league_options.insert(1, current_league) # Add current if unknown
+    league_combo = ttk.Combobox(content_frame, textvariable=entry_vars['league'], values=league_options, state="normal", width=38) # Allow typing
+    league_combo.grid(row=row_idx, column=1, sticky="ew", pady=5, padx=5)
+    row_idx += 1
+    
+    # Odds
+    ttk.Label(content_frame, text="Odds:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    odds_entry = ttk.Entry(content_frame, textvariable=entry_vars['odds'], width=10)
+    odds_entry.grid(row=row_idx, column=1, sticky="w", pady=5, padx=5)
+    row_idx += 1
+    
+    # Stake
+    ttk.Label(content_frame, text="Stake:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    stake_entry = ttk.Entry(content_frame, textvariable=entry_vars['stake'], width=10)
+    stake_entry.grid(row=row_idx, column=1, sticky="w", pady=5, padx=5)
+    row_idx += 1
+    
+    # Date (Simple Entry for now)
+    ttk.Label(content_frame, text="Date:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    date_entry = ttk.Entry(content_frame, textvariable=entry_vars['date'], width=25)
+    date_entry.grid(row=row_idx, column=1, sticky="w", pady=5, padx=5)
+    row_idx += 1
+    
+    # Result
+    ttk.Label(content_frame, text="Result:", background="#313131", foreground="#E0E0E0").grid(row=row_idx, column=0, sticky="e", pady=5, padx=5)
+    result_options = ["Pending", "Win", "Loss"]
+    result_combo = ttk.Combobox(content_frame, textvariable=entry_vars['result'], values=result_options, state="readonly", width=10)
+    result_combo.grid(row=row_idx, column=1, sticky="w", pady=5, padx=5)
+    row_idx += 1
+
+    # --- Buttons --- 
+    button_frame = tk.Frame(dialog, bg="#313131")
+    button_frame.pack(pady=10)
+    
+    # Pass necessary info to save function (Placeholder for now)
+    save_button = ttk.Button(button_frame, text="Save Changes", style="TButton", 
+                             command=lambda: messagebox.showinfo("Not Implemented", "Save functionality not yet added.", parent=dialog)) # Placeholder command
+                             # command=lambda d=dialog, idx=df_index, ev=entry_vars: save_edited_bet(d, idx, ev))
+    save_button.pack(side=tk.LEFT, padx=10)
+    
+    cancel_button = ttk.Button(button_frame, text="Cancel", style="TButton", command=dialog.destroy)
+    cancel_button.pack(side=tk.LEFT, padx=10)
+
+    dialog.wait_window() # Wait for the dialog to be closed
+
 # --- Functionality for Stats Page ---
 # Define these functions *before* they are used in button commands
 
 def show_main_page():
-    """Hides stats frame and shows the main betting interface frames."""
-    logging.info("Switching to Main page.")
-    if stats_frame.winfo_exists() and stats_frame.winfo_manager() == 'grid':
-        stats_frame.grid_forget()
-    
-    # Show the main card frames
+    """Hides the stats frame and shows the main frames."""
+    logging.debug("Switching to Main Page")
+    # Hide stats frame
+    stats_frame.grid_remove()
+    # Show main frames (using their original grid configuration)
     br_frame.grid(row=0, column=1, sticky="ew", padx=20, pady=(10, 5))
     feedback_frame.grid(row=1, column=1, sticky="ew", padx=20, pady=5)
     league_filter_frame.grid(row=2, column=1, sticky="ew", padx=20, pady=5)
     history_frame.grid(row=3, column=1, sticky="nsew", padx=20, pady=(5, 10))
+    # Ensure history is updated (it might be filtered differently on stats page)
+    update_history_table(show_only_today=True)
 
 def update_stats_display(period='all'):
-    """Calculates and displays statistics for the selected period."""
-    logging.info(f"Updating stats display for period: {period}")
-    
-    # Initialize df_filtered to None
-    df_filtered = None
-    
-    # Find the content frame within stats_frame 
-    stats_content_frame = None
-    if not stats_frame.winfo_exists(): # Ensure stats frame exists first
-        logging.error("Stats frame does not exist when trying to update stats display.")
-        return
-        
-    for child in stats_frame.winfo_children():
-         # Assuming the content frame is the one with bg #313131 and is a Frame
-        if isinstance(child, tk.Frame) and child.cget('bg') == "#313131": 
-             stats_content_frame = child
-             break
-    
-    if not stats_content_frame:
-        logging.error("Could not find stats_content_frame to display stats.")
-        return 
-        
-    # Clear previous stats content
-    for widget in stats_content_frame.winfo_children():
-        widget.destroy()
+    """Calculates and updates the statistics labels on the stats page based on the selected period."""
+    logging.info(f"--- update_stats_display entered (period: {period}) ---")
+    global history, stats_labels, stats_period_title, TEXT_COLOR, WIN_COLOR, LOSS_COLOR # Ensure colors are accessible
 
-    if history.empty:
-        ttk.Label(stats_content_frame, text="No betting history to analyze.", 
-                 font=("Segoe UI", 12, "italic"), background="#313131", foreground="#BDBDBD").pack(pady=20)
-        logging.warning("Attempted to update stats, but history is empty.")
+    # --- Date Parsing and Filtering Logic (Keep as is from previous step) ---
+    if 'Date' not in history.columns:
+        logging.error("History DataFrame is missing 'Date' column. Cannot filter by period or calculate stats.")
+        for key, label in stats_labels.items():
+            label.config(text=f"{label.cget('text').split(':')[0]}: Error - No Date", foreground=LOSS_COLOR)
+        stats_period_title.config(text="Statistics Error: Missing Date Column")
         return
-
-    # --- Ensure Date column is datetime type for comparison --- 
     try:
-        temp_history = history.copy() # Work on a copy
-        if 'Date_dt' not in temp_history.columns or temp_history['Date_dt'].isnull().all():
-             # Attempt conversion only if needed
-             if 'Date' in temp_history.columns:
-                 temp_history['Date_dt'] = pd.to_datetime(temp_history['Date'], errors='coerce', format='mixed')
-             else:
-                 # If no Date column, we can't proceed with date-based filtering/stats reliable
-                 logging.warning("Stats calculation stopped: Missing 'Date' column in history.")
-                 # Display message and return
-                 for widget in stats_content_frame.winfo_children(): widget.destroy()
-                 ttk.Label(stats_content_frame, text="Missing 'Date' column in history data.", 
-                           font=("Segoe UI", 12), background="#313131", foreground="#E57373").pack(pady=20)
-                 return
-                 
-        # Drop rows where Date_dt could not be parsed BEFORE assigning to df_filtered
-        df_filtered_temp = temp_history.dropna(subset=['Date_dt']).copy()
-        
-        if df_filtered_temp.empty and not history.empty:
-            # Handle case where all rows are dropped after date parsing attempt
-            logging.warning("All rows dropped after date conversion/dropna for stats.")
-            for widget in stats_content_frame.winfo_children(): widget.destroy()
-            ttk.Label(stats_content_frame, text="Could not parse dates for stats calculation.", 
-                     font=("Segoe UI", 12), background="#313131", foreground="#E57373").pack(pady=20)
-            return # df_filtered remains None
-        else:
-             # Assign successfully processed data to df_filtered
-             df_filtered = df_filtered_temp 
-             logging.debug("Successfully prepared df_filtered with Date_dt column.")
-
+        # Use the correct format directly
+        history_dt = pd.to_datetime(history['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+        # Remove the millisecond check and fallback
+        # if history_dt.isnull().all(): 
+        #     logging.warning("Could not parse any dates with milliseconds format, trying mixed format.")
+        #     history_dt = pd.to_datetime(history['Date'], errors='coerce', format='mixed')
+            
+        if history_dt.isnull().any():
+            logging.warning(f"Could not parse {history_dt.isnull().sum()} date(s) in history. These rows will be excluded from time-based stats.")
+            
+        df_analyzable = history.copy()
+        df_analyzable['Date_dt'] = history_dt
+        df_analyzable.dropna(subset=['Date_dt'], inplace=True)
     except Exception as e:
-         # Catch errors during date processing/dropna
-         logging.error(f"Error preparing history dates for stats: {e}", exc_info=True)
-         for widget in stats_content_frame.winfo_children(): widget.destroy()
-         ttk.Label(stats_content_frame, text="Error processing dates in history. Check logs.", 
-                   font=("Segoe UI", 12), background="#313131", foreground="#E57373").pack(pady=20)
-         return # df_filtered remains None
-
-    # --- Proceed only if df_filtered was successfully created ---
-    if df_filtered is None:
-        # This case should ideally be caught by returns above, but as a safeguard:
-        logging.error("df_filtered is None before numeric conversion, halting stats update.")
+        logging.error(f"Error converting 'Date' column to datetime: {e}", exc_info=True)
+        for key, label in stats_labels.items():
+            label.config(text=f"{label.cget('text').split(':')[0]}: Error - Date Conv.", foreground=LOSS_COLOR)
+        stats_period_title.config(text="Statistics Error: Date Conversion Failed")
         return
-        
-    # --- Create Numeric Stake/Payout Columns EARLY --- 
-    # Now df_filtered is guaranteed to exist if we reach here
-    try:
-        # 1. Ensure columns are string type before replacing characters
-        if 'Stake' in df_filtered.columns:
-             df_filtered['Stake_Clean'] = df_filtered['Stake'].astype(str).str.replace('€', '', regex=False).str.strip()
-        if 'Payout' in df_filtered.columns:
-             df_filtered['Payout_Clean'] = df_filtered['Payout'].astype(str).str.replace('€', '', regex=False).str.strip()
 
-        # 2. Convert cleaned columns to numeric, coercing errors to NaN
-        df_filtered['Stake_num'] = pd.to_numeric(df_filtered['Stake_Clean'], errors='coerce')
-        df_filtered['Payout_num'] = pd.to_numeric(df_filtered['Payout_Clean'], errors='coerce')
-
-        # 3. Log rows where conversion failed (resulted in NaN)
-        stake_nan_rows = df_filtered[df_filtered['Stake_num'].isna()]
-        payout_nan_rows = df_filtered[df_filtered['Payout_num'].isna()]
-        if not stake_nan_rows.empty:
-            logging.warning(f"Could not convert 'Stake' to numeric for rows (Index, Value): {list(zip(stake_nan_rows.index, stake_nan_rows['Stake']))}")
-        if not payout_nan_rows.empty:
-            logging.warning(f"Could not convert 'Payout' to numeric for rows (Index, Value): {list(zip(payout_nan_rows.index, payout_nan_rows['Payout']))}")
-
-        # 4. Fill NaN values with 0 after logging, so calculations can proceed
-        df_filtered['Stake_num'] = df_filtered['Stake_num'].fillna(0)
-        df_filtered['Payout_num'] = df_filtered['Payout_num'].fillna(0)
-        
-        logging.debug("Cleaned and converted Stake/Payout to Stake_num/Payout_num, filling errors with 0.")
-        
-    except KeyError as e:
-        # This error means the original 'Stake' or 'Payout' column is missing
-        logging.error(f"Missing required column for numeric conversion: {e}")
-        # Display an error message in the UI
-        for widget in stats_content_frame.winfo_children(): widget.destroy() # Clear frame
-        ttk.Label(stats_content_frame, text=f"Error: Missing data column '{e}' in history.", 
-                   font=("Segoe UI", 12), background="#313131", foreground="#E57373").pack(pady=20)
-        return
-    except Exception as e:
-        # Catch any other unexpected errors during cleaning/conversion
-        logging.error(f"Unexpected error converting Stake/Payout to numeric: {e}", exc_info=True)
-        for widget in stats_content_frame.winfo_children(): widget.destroy() # Clear frame
-        ttk.Label(stats_content_frame, text="Error processing stake/payout data. Check logs.", 
-                   font=("Segoe UI", 12), background="#313131", foreground="#E57373").pack(pady=20)
-        return
-    # --- END Numeric Column Creation ---
-
-    # Filter data based on period
-    current_date = pd.Timestamp.now().normalize() # Get date part only
+    now = pd.Timestamp.now()
+    df_filtered = pd.DataFrame()
     period_text = "All Time"
-    if period == 'day':
-        df_filtered = df_filtered[df_filtered['Date_dt'].dt.normalize() == current_date]
-        period_text = "Today"
-    elif period == 'week':
-        start_date = current_date - pd.Timedelta(days=6) # Include today
-        df_filtered = df_filtered[df_filtered['Date_dt'].dt.normalize() >= start_date]
-        period_text = "Last 7 Days"
-    elif period == 'month':
-        start_date = current_date - pd.Timedelta(days=29) # Include today
-        df_filtered = df_filtered[df_filtered['Date_dt'].dt.normalize() >= start_date]
-        period_text = "Last 30 Days"
-    
-    if df_filtered.empty:
-        ttk.Label(stats_content_frame, text=f"No bets found for: {period_text}", 
-                 font=("Segoe UI", 12, "italic"), background="#313131", foreground="#BDBDBD").pack(pady=20)
-        logging.info(f"No bets found for the period: {period_text}")
+    try:
+        if period == 'today':
+            start_date = now.normalize()
+            df_filtered = df_analyzable[df_analyzable['Date_dt'] >= start_date]
+            period_text = "Today"
+        elif period == '7days':
+            start_date = (now - timedelta(days=7)).normalize()
+            df_filtered = df_analyzable[df_analyzable['Date_dt'] >= start_date]
+            period_text = "Last 7 Days"
+        elif period == '30days':
+            start_date = (now - timedelta(days=30)).normalize()
+            df_filtered = df_analyzable[df_analyzable['Date_dt'] >= start_date]
+            period_text = "Last 30 Days"
+        elif period == 'all':
+            df_filtered = df_analyzable.copy()
+            period_text = "All Time"
+        else:
+            logging.warning(f"Unknown period '{period}' received. Defaulting to 'all'.")
+            df_filtered = df_analyzable.copy()
+            period_text = "All Time"
+        stats_period_title.config(text=f"Statistics for: {period_text}")
+        logging.info(f"Filtered history for '{period_text}'. Original analyzable rows: {len(df_analyzable)}, Filtered rows: {len(df_filtered)}")
+    except Exception as e:
+        logging.error(f"Error filtering DataFrame for period '{period}': {e}", exc_info=True)
+        for key, label in stats_labels.items():
+             label.config(text=f"{label.cget('text').split(':')[0]}: Error - Filter", foreground=LOSS_COLOR)
+        stats_period_title.config(text=f"Statistics Error: Failed to Filter ({period})")
         return
+    # --- End Date Parsing and Filtering ---
 
-    # Calculate stats
-    total_bets = len(df_filtered)
-    completed_bets_df = df_filtered[df_filtered["Result"] != "Pending"].copy()
-    completed_bets_count = len(completed_bets_df)
-    wins = len(completed_bets_df[completed_bets_df["Result"] == "Win"])
-    losses = len(completed_bets_df[completed_bets_df["Result"] == "Loss"])
-    pending = total_bets - completed_bets_count
-    win_rate = (wins / completed_bets_count * 100) if completed_bets_count > 0 else 0
-    # Remove creation here as it's done earlier
-    # completed_bets_df.loc[:, 'Stake_num'] = pd.to_numeric(completed_bets_df['Stake'], errors='coerce').fillna(0)
-    # completed_bets_df.loc[:, 'Payout_num'] = pd.to_numeric(completed_bets_df['Payout'], errors='coerce').fillna(0)
-    # df_filtered.loc[:, 'Stake_num'] = pd.to_numeric(df_filtered['Stake'], errors='coerce').fillna(0)
-    total_stake = df_filtered['Stake_num'].sum() # Use the pre-calculated column
-    if not completed_bets_df.empty:
-        # Use the pre-calculated columns here too
-        profit_on_wins = completed_bets_df.loc[completed_bets_df["Result"] == "Win", 'Payout_num'].sum()
-        stake_on_wins = completed_bets_df.loc[completed_bets_df["Result"] == "Win", 'Stake_num'].sum()
-        stake_on_losses = completed_bets_df.loc[completed_bets_df["Result"] == "Loss", 'Stake_num'].sum()
-        total_profit = (profit_on_wins - stake_on_wins) - stake_on_losses
-    else:
-        total_profit = 0.0
-    roi = (total_profit / total_stake * 100) if total_stake > 0 else 0
+    # --- Helper function to update labels with text and color ---
+    def update_label(key, base_text, value=None, is_currency=False, is_percent=False, show_sign=False):
+        if key not in stats_labels:
+            logging.warning(f"Label key '{key}' not found in stats_labels dictionary.")
+            return
 
-    # --- Start Advanced Stats Calculations (Overall) ---
-    avg_stake = total_stake / total_bets if total_bets > 0 else 0
-    avg_odds_placed = df_filtered['Odds'].mean() if total_bets > 0 else 0
-    
-    biggest_win = 0
-    biggest_loss = 0
-    longest_win_streak = 0
-    longest_loss_streak = 0
-    current_win_streak = 0
-    current_loss_streak = 0
-    profit_per_bet = [] # For variance/std dev
+        label = stats_labels[key]
+        display_text = f"{base_text}: "
+        fg_color = TEXT_COLOR # Default
 
-    if not completed_bets_df.empty:
-        # Calculate profit/loss per completed bet
-        completed_bets_df['ProfitLoss'] = completed_bets_df.apply(
-            lambda row: (row['Payout_num'] - row['Stake_num']) if row['Result'] == 'Win' else -row['Stake_num'], axis=1
-        )
-        profit_per_bet = completed_bets_df['ProfitLoss'].tolist()
-        biggest_win = completed_bets_df['ProfitLoss'].max()
-        biggest_loss = completed_bets_df['ProfitLoss'].min() # Loss is negative
+        if value is None or value == '(todo)' or (isinstance(value, (float, np.floating)) and pd.isna(value)):
+            display_text += "N/A" if value != '(todo)' else "(todo)"
+        elif isinstance(value, str) and value == "Error":
+             display_text += "Error"
+             fg_color = LOSS_COLOR
+        elif isinstance(value, (int, float, np.number)): # Check if it's a number
+            # Determine color based on value for specific keys
+            if show_sign and value > 0:
+                fg_color = WIN_COLOR
+            elif value < 0:
+                fg_color = LOSS_COLOR
 
-        # Sort by date to calculate streaks
-        streaks_df = completed_bets_df.sort_values(by='Date_dt')
-        for result in streaks_df['Result']:
-            if result == 'Win':
-                current_win_streak += 1
-                current_loss_streak = 0
-                longest_win_streak = max(longest_win_streak, current_win_streak)
-            elif result == 'Loss':
-                current_loss_streak += 1
-                current_win_streak = 0
-                longest_loss_streak = max(longest_loss_streak, current_loss_streak)
-            # Ignore Pending for streaks
+            # Format value
+            if is_currency:
+                display_text += f"€{value:+.2f}" if show_sign else f"€{value:.2f}"
+            elif is_percent:
+                display_text += f"{value:.1f}%"
+            elif isinstance(value, float):
+                 display_text += f"{value:.2f}" # Default float format
+            else:
+                 display_text += str(value) # Default int/other format
+        else:
+            display_text += str(value) # Non-numeric, non-error value
 
-    # Variance/Std Dev
-    profit_variance = np.var(profit_per_bet) if profit_per_bet else 0
-    profit_std_dev = np.std(profit_per_bet) if profit_per_bet else 0
-    # --- End Advanced Stats Calculations (Overall) ---
+        label.config(text=display_text, foreground=fg_color)
+    # --- End Helper Function ---
 
+    # --- Calculate Statistics from df_filtered ---
+    try:
+        if df_filtered.empty:
+            logging.warning(f"No betting history found for the selected period: {period_text}")
+            # Set all labels to N/A using the helper
+            update_label('total_bets', "Total Bets", 0)
+            update_label('completed', "Completed", 0)
+            update_label('pending', "Pending", 0)
+            update_label('wins', "Wins", 0)
+            update_label('losses', "Losses", 0)
+            update_label('win_rate', "Win Rate", None)
+            update_label('total_stake', "Total Stake", 0, is_currency=True)
+            update_label('total_profit', "Total Profit", 0, is_currency=True, show_sign=True)
+            update_label('roi', "ROI", None)
+            update_label('avg_stake', "Avg Stake", None)
+            update_label('avg_odds', "Avg Odds (Placed)", None)
+            update_label('biggest_win', "Biggest Win", None)
+            update_label('biggest_loss', "Biggest Loss", None)
+            update_label('longest_win_streak', "Longest Win Streak", 0)
+            update_label('longest_loss_streak', "Longest Loss Streak", 0)
+            update_label('profit_std_dev', "Profit Std Dev", None)
+            # (Top Leagues/Games by League updates later)
+            logging.info("--- update_stats_display finished (no data for period) ---")
+            return
 
-    # --- Display Stats ---
-    # Clear previous content FIRST
-    for widget in stats_content_frame.winfo_children():
-        widget.destroy()
+        # Ensure numeric types
+        df_filtered['Stake'] = pd.to_numeric(df_filtered['Stake'], errors='coerce').fillna(0)
+        df_filtered['Odds'] = pd.to_numeric(df_filtered['Odds'], errors='coerce').fillna(0)
+        df_filtered['Payout'] = pd.to_numeric(df_filtered['Payout'], errors='coerce').fillna(0)
+
+        # --- Calculations ---
+        total_bets_count = len(df_filtered)
+        pending_bets = df_filtered[df_filtered['Result'] == 'Pending']
+        finished_bets = df_filtered[df_filtered['Result'].isin(['Win', 'Loss'])]
+        won_bets = finished_bets[finished_bets['Result'] == 'Win']
+        lost_bets = finished_bets[finished_bets['Result'] == 'Loss']
+        pending_count = len(pending_bets)
+        completed_count = len(finished_bets)
+        wins_count = len(won_bets)
+        losses_count = len(lost_bets)
+
+        win_rate = (wins_count / completed_count * 100) if completed_count > 0 else None
+
+        total_stake = finished_bets['Stake'].sum()
+
+        def calculate_profit(row):
+            if row['Result'] == 'Win': return row['Payout'] - row['Stake']
+            elif row['Result'] == 'Loss': return -row['Stake']
+            else: return 0
+        # Use .loc to avoid SettingWithCopyWarning if possible
+        finished_bets_copy = finished_bets.copy()
+        finished_bets_copy['Profit'] = finished_bets_copy.apply(calculate_profit, axis=1)
+        total_profit = finished_bets_copy['Profit'].sum()
         
-    # Configure grid layout for stats_content_frame
-    stats_content_frame.grid_columnconfigure(0, weight=1) # Allow content to expand horizontally
-    # Define row weights - give row 5 (league_tree_frame) the weight to expand vertically
-    stats_content_frame.grid_rowconfigure(5, weight=1)
+        roi = (total_profit / total_stake * 100) if total_stake > 0 else None
+        avg_stake = total_stake / completed_count if completed_count > 0 else None
+        avg_odds = finished_bets['Odds'].mean() if completed_count > 0 else None
+        biggest_win = finished_bets_copy.loc[finished_bets_copy['Profit'] > 0, 'Profit'].max() if wins_count > 0 else None
+        biggest_loss = finished_bets_copy.loc[finished_bets_copy['Profit'] < 0, 'Profit'].min() if losses_count > 0 else None
+        profit_std_dev = finished_bets_copy['Profit'].std() if completed_count > 1 else None
 
-    # Use a consistent font and padding for stats labels - Adjusted padding again
-    stat_font = ("Segoe UI", 11)
-    label_padding = {'pady': 2, 'padx': (10, 5)} # Pad right of label
-    value_padding = {'pady': 2, 'padx': (5, 10)} # Pad left of value
-    profit_color = "#81C784" if total_profit >= 0 else "#E57373"
-
-    # Grid Placement within stats_content_frame
-    row_index = 0
-    
-    # Overall Title
-    overall_title_label = ttk.Label(stats_content_frame, text=f"Statistics for: {period_text}",
-                                      font=("Segoe UI", 14, "bold"), background="#313131", foreground="#03A9F4")
-    # Use grid instead of pack
-    overall_title_label.grid(row=row_index, column=0, pady=(10, 15), sticky="n")
-    row_index += 1
-
-    # --- Summary Stats Frame (Wins/Losses/Pending) --- Simplified to 2 columns ---
-    summary_frame = tk.Frame(stats_content_frame, bg="#313131")
-    summary_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=5)
-    summary_frame.grid_columnconfigure(0, weight=1) # Label column takes weight for alignment
-    summary_frame.grid_columnconfigure(1, weight=1) # Value column takes weight
-    
-    # Place labels in col 0 (sticky e), values in col 1 (sticky w)
-    ttk.Label(summary_frame, text="Total Bets:", font=stat_font, anchor="e").grid(row=0, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{total_bets}", font=stat_font, anchor="w").grid(row=0, column=1, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Completed:", font=stat_font, anchor="e").grid(row=1, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{completed_bets_count}", font=stat_font, anchor="w").grid(row=1, column=1, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Pending:", font=stat_font, anchor="e").grid(row=2, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{pending}", font=stat_font, anchor="w").grid(row=2, column=1, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Wins:", font=stat_font, anchor="e").grid(row=3, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{wins}", font=stat_font, anchor="w", foreground="#81C784").grid(row=3, column=1, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Losses:", font=stat_font, anchor="e").grid(row=4, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{losses}", font=stat_font, anchor="w", foreground="#E57373").grid(row=4, column=1, sticky="w", **value_padding)
-    ttk.Label(summary_frame, text="Win Rate:", font=stat_font, anchor="e").grid(row=5, column=0, sticky="e", **label_padding)
-    ttk.Label(summary_frame, text=f"{win_rate:.1f}%", font=stat_font, anchor="w").grid(row=5, column=1, sticky="w", **value_padding)
-    row_index += 1
-
-    # --- Financial Stats Frame (Stake/Profit/ROI) --- Simplified to 2 columns ---
-    financial_frame = tk.Frame(stats_content_frame, bg="#313131")
-    financial_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=10)
-    financial_frame.grid_columnconfigure(0, weight=1) # Label column
-    financial_frame.grid_columnconfigure(1, weight=1) # Value column
-    
-    ttk.Label(financial_frame, text="Total Stake:", font=stat_font, anchor="e").grid(row=0, column=0, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"€{total_stake:.2f}", font=stat_font, anchor="w").grid(row=0, column=1, sticky="w", **value_padding)
-    ttk.Label(financial_frame, text="Total Profit:", font=stat_font, anchor="e").grid(row=1, column=0, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"€{total_profit:+.2f}", font=stat_font, anchor="w", foreground=profit_color).grid(row=1, column=1, sticky="w", **value_padding)
-    ttk.Label(financial_frame, text="ROI:", font=stat_font, anchor="e").grid(row=2, column=0, sticky="e", **label_padding)
-    ttk.Label(financial_frame, text=f"{roi:.1f}%", font=stat_font, anchor="w", foreground=profit_color).grid(row=2, column=1, sticky="w", **value_padding)
-    row_index += 1 
-
-    # --- Advanced Overall Stats Frame --- Simplified to 2 columns ---
-    adv_overall_frame = tk.Frame(stats_content_frame, bg="#313131")
-    adv_overall_frame.grid(row=row_index, column=0, sticky="ew", padx=10, pady=5)
-    adv_overall_frame.grid_columnconfigure(0, weight=1) # Label column
-    adv_overall_frame.grid_columnconfigure(1, weight=1) # Value column
-    adv_row = 0
-
-    ttk.Label(adv_overall_frame, text="Avg Stake:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{avg_stake:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Avg Odds (Placed):", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{avg_odds_placed:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Biggest Win:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{biggest_win:+.2f}", font=stat_font, anchor="w", foreground="#81C784").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Biggest Loss:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{biggest_loss:.2f}", font=stat_font, anchor="w", foreground="#E57373").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Longest Win Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{longest_win_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Longest Loss Streak:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"{longest_loss_streak}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-    ttk.Label(adv_overall_frame, text="Profit Std Dev:", font=stat_font, anchor="e").grid(row=adv_row, column=0, sticky="e", **label_padding)
-    ttk.Label(adv_overall_frame, text=f"€{profit_std_dev:.2f}", font=stat_font, anchor="w").grid(row=adv_row, column=1, sticky="w", **value_padding)
-    adv_row += 1
-
-    row_index += 1
-
-    # --- Per-League Statistics Calculation ---
-    league_stats = [] # Initialize list to store results
-    if 'League' not in df_filtered.columns:
-        logging.warning(f"Cannot calculate per-league stats: 'League' column missing...")
-    else:
-        # Prepare grouping column
-        df_filtered['League_Group'] = df_filtered['League'].fillna('Unknown').astype(str).str.strip()
-        df_filtered.loc[df_filtered['League_Group'] == '', 'League_Group'] = 'Unknown'
-        if not df_filtered.empty:
-             grouped = df_filtered.groupby('League_Group')
-             for league, group_df in grouped:
-                # --- Calculate ALL stats for this league --- 
-                lg_total_stake = 0 
-                lg_total_profit = 0.0
-                lg_avg_stake = 0.0
-                lg_avg_odds = 0.0
-                lg_biggest_win = 0.0
-                lg_biggest_loss = 0.0
-                lg_total_bets = len(group_df)
-                lg_completed_bets_df = group_df[group_df["Result"] != "Pending"].copy()
-                lg_completed_bets_count = len(lg_completed_bets_df)
-                # ... [Wins/Losses/Pending/Win Rate calculation] ...
-                lg_wins = 0; lg_losses = 0
-                if not lg_completed_bets_df.empty:
-                    lg_wins = len(lg_completed_bets_df[lg_completed_bets_df["Result"] == "Win"])
-                    lg_losses = len(lg_completed_bets_df[lg_completed_bets_df["Result"] == "Loss"])
-                lg_pending = lg_total_bets - lg_completed_bets_count
-                lg_win_rate = (lg_wins / lg_completed_bets_count * 100) if lg_completed_bets_count > 0 else 0
+        # --- Streaks Calculation ---
+        longest_win_streak = 0
+        current_win_streak = 0
+        longest_loss_streak = 0
+        current_loss_streak = 0
+        if completed_count > 0:
+            # Sort finished bets by date to calculate streaks correctly
+            # Use the Date_dt column we created earlier for sorting
+            sorted_finished_bets = finished_bets_copy.sort_values(by='Date_dt')
+            for result in sorted_finished_bets['Result']:
+                if result == 'Win':
+                    current_win_streak += 1
+                    current_loss_streak = 0 # Reset loss streak
+                    if current_win_streak > longest_win_streak:
+                        longest_win_streak = current_win_streak
+                elif result == 'Loss':
+                    current_loss_streak += 1
+                    current_win_streak = 0 # Reset win streak
+                    if current_loss_streak > longest_loss_streak:
+                        longest_loss_streak = current_loss_streak
+                # Ignore other results if any (shouldn't happen with current filtering)
                 
-                # Stake
-                if 'Stake_num' in group_df.columns:
-                      lg_total_stake = group_df['Stake_num'].sum()
-                else:
-                      logging.warning(f"League group '{league}' missing 'Stake_num' column.")
-                lg_avg_stake = lg_total_stake / lg_total_bets if lg_total_bets > 0 else 0
+        # --- End Streaks Calculation ---
+
+        # --- Update Labels using Helper ---
+        update_label('total_bets', "Total Bets", total_bets_count)
+        update_label('completed', "Completed", completed_count)
+        update_label('pending', "Pending", pending_count)
+        update_label('wins', "Wins", wins_count)
+        update_label('losses', "Losses", losses_count)
+        update_label('win_rate', "Win Rate", win_rate, is_percent=True)
+        update_label('total_stake', "Total Stake", total_stake, is_currency=True)
+        update_label('total_profit', "Total Profit", total_profit, is_currency=True, show_sign=True)
+        update_label('roi', "ROI", roi, is_percent=True)
+        update_label('avg_stake', "Avg Stake", avg_stake, is_currency=True)
+        update_label('avg_odds', "Avg Odds (Placed)", avg_odds)
+        update_label('biggest_win', "Biggest Win", biggest_win, is_currency=True, show_sign=True)
+        update_label('biggest_loss', "Biggest Loss", biggest_loss, is_currency=True)
+        # Update streak labels with calculated values
+        update_label('longest_win_streak', "Longest Win Streak", longest_win_streak)
+        update_label('longest_loss_streak', "Longest Loss Streak", longest_loss_streak)
+        update_label('profit_std_dev', "Profit Std Dev", profit_std_dev, is_currency=True)
+
+        # --- Top 3 Profitable Leagues --- 
+        if completed_count > 0 and 'League' in finished_bets_copy.columns:
+            try:
+                league_profit = finished_bets_copy.groupby('League')['Profit'].sum()
+                league_profit = league_profit[(league_profit > 0) & (league_profit.index.str.strip() != "") & (league_profit.index.str.lower() != "unknown league")] # Only positive profit
+                top_leagues = league_profit.nlargest(3)
                 
-                # Odds
-                lg_avg_odds = group_df['Odds'].mean() if lg_total_bets > 0 else 0
-                
-                # Profit/Loss/ROI/MaxWin/MaxLoss
-                if not lg_completed_bets_df.empty:
-                    if 'Payout_num' in lg_completed_bets_df.columns and 'Stake_num' in lg_completed_bets_df.columns:
-                         lg_completed_bets_df['ProfitLoss'] = lg_completed_bets_df.apply(
-                             lambda row: (row['Payout_num'] - row['Stake_num']) if row['Result'] == 'Win' else -row['Stake_num'], axis=1
-                         )
-                         lg_total_profit = lg_completed_bets_df['ProfitLoss'].sum()
-                         if not lg_completed_bets_df['ProfitLoss'].empty and lg_completed_bets_df['ProfitLoss'].notna().any():
-                            lg_biggest_win = lg_completed_bets_df['ProfitLoss'].max()
-                            lg_biggest_loss = lg_completed_bets_df['ProfitLoss'].min()
-                         else: # Handle cases where ProfitLoss could be all NaN if source data was bad
-                            lg_biggest_win = 0; lg_biggest_loss = 0
+                # Update the dedicated labels
+                for i in range(3):
+                    if i < len(top_leagues):
+                        league = top_leagues.index[i]
+                        profit = top_leagues.iloc[i]
+                        # Apply green color for profit
+                        top_league_labels[i].config(text=f"{i+1}. {league}: €{profit:+.2f}", foreground=WIN_COLOR)
                     else:
-                         logging.warning(f"League '{league}' missing Payout/Stake num for profit.")
-                lg_roi = (lg_total_profit / lg_total_stake * 100) if lg_total_stake > 0 else 0
+                        top_league_labels[i].config(text="") # Clear unused labels
+                        
+                if top_leagues.empty:
+                     top_league_labels[0].config(text="No profitable leagues found.", foreground=TEXT_COLOR) # Use first label for message
+
+            except Exception as league_ex:
+                logging.error(f"Error calculating top leagues: {league_ex}", exc_info=True)
+                for i in range(3):
+                     top_league_labels[i].config(text="Error calculating.", foreground=LOSS_COLOR) 
+                     
+        elif 'League' not in finished_bets_copy.columns:
+             for i in range(3):
+                  top_league_labels[i].config(text="Error: League column missing.", foreground=LOSS_COLOR)
+        else: # No completed bets
+             for i in range(3):
+                  top_league_labels[i].config(text="", foreground=TEXT_COLOR) # Clear labels if no bets
+        # --- End Top 3 Leagues ---
+
+        # --- Update "By League" Tab --- 
+        # Clear previous entries
+        for item in league_stats_tree.get_children():
+            league_stats_tree.delete(item)
+            
+        if completed_count > 0 and 'League' in df_filtered.columns: # Check df_filtered now
+            try:
+                # Create a working copy to add Profit column safely
+                df_working_league = df_filtered.copy()
+                # Ensure Profit calculation uses the correct function defined earlier
+                df_working_league['Profit'] = df_working_league.apply(calculate_profit, axis=1)
+
+                # Group by league and calculate aggregates
+                # Fill NaN league names before grouping to avoid issues
+                df_working_league['League'].fillna("Unknown League", inplace=True)
+                league_groups = df_working_league.groupby('League')
+
+                # Aggregate stats using named aggregation for clarity
+                league_stats = league_groups.agg(
+                    total_bets = pd.NamedAgg(column='Match', aggfunc='size'),
+                    wins = pd.NamedAgg(column='Result', aggfunc=lambda x: (x == 'Win').sum()),
+                    losses = pd.NamedAgg(column='Result', aggfunc=lambda x: (x == 'Loss').sum()),
+                    # Calculate stake only on finished bets within the group
+                    total_stake_finished = pd.NamedAgg(column='Stake', aggfunc=lambda x: x[df_working_league.loc[x.index, 'Result'].isin(['Win', 'Loss'])].sum()),
+                    total_profit = pd.NamedAgg(column='Profit', aggfunc='sum')
+                ).reset_index()
+
+                # Calculate derived stats
+                league_stats['Completed'] = league_stats['wins'] + league_stats['losses']
+                # Handle division by zero for Win Rate and ROI
+                league_stats['Win Rate'] = (league_stats['wins'] / league_stats['Completed'] * 100).where(league_stats['Completed'] > 0, 0)
+                league_stats['ROI'] = (league_stats['total_profit'] / league_stats['total_stake_finished'] * 100).where(league_stats['total_stake_finished'] > 0, 0)
+
+                # Sort by Profit by default (optional)
+                league_stats = league_stats.sort_values(by="total_profit", ascending=False)
+
+                # Populate Treeview (By League)
+                if league_stats.empty:
+                    league_stats_tree.insert("", "end", values=("No league data to display...", "", "", "", "", "", "", "", ""))
+                else:
+                    for index, row in league_stats.iterrows():
+                        profit_val = row.get('total_profit', 0)
+                        
+                        # --- Determine Profit Symbol/Color --- 
+                        profit_symbol = ""
+                        # Use Unicode characters for symbols; ensure font supports them
+                        if profit_val > 0:
+                             # Green Circle (or choose another symbol like ▲)
+                             profit_symbol = f'\U0001F7E2 ' # Green Circle Unicode
+                        elif profit_val < 0:
+                             # Red Circle (or choose another symbol like ▼)
+                             profit_symbol = f'\U0001F534 ' # Red Circle Unicode
+                        # Add a space if no symbol for alignment, or use a neutral symbol like a gray dot
+                        else:
+                            profit_symbol = "  " # Space for alignment
+                            
+                        # Format values for display
+                        league_name = row.get('League', 'N/A')
+                        if pd.isna(league_name): league_name = "Unknown League"
+                        else: league_name = str(league_name)
+                        bets_count = row.get('total_bets', 0)
+                        completed_val = row.get('Completed', 0)
+                        wins_val = row.get('wins', 0)
+                        losses_val = row.get('losses', 0)
+                        win_rate_str = f"{row.get('Win Rate', 0):.1f}%"
+                        stake_str = f"€{row.get('total_stake_finished', 0):.2f}"
+                        # Prepend symbol to the formatted profit string
+                        profit_str = f"{profit_symbol}€{profit_val:+.2f}"
+                        roi_str = f"{row.get('ROI', 0):.1f}%"
+                        
+                        # Insert row without tags
+                        league_stats_tree.insert("", "end", values=(
+                            league_name, bets_count, completed_val, wins_val, losses_val,
+                            win_rate_str, stake_str, profit_str, roi_str
+                        )) # No tags
+            except Exception as league_tab_ex:
+                 # This except block needs to be correctly aligned with the try block
+                 logging.error(f"Error populating 'By League' tab: {league_tab_ex}", exc_info=True)
+                 league_stats_tree.insert("", "end", values=("Error loading league data...", "", "", "", "", "", "", "", ""))
+                 
+        elif 'League' not in df_filtered.columns:
+             # This elif and the next ones also need correct alignment
+             league_stats_tree.insert("", "end", values=("League column missing...", "", "", "", "", "", "", "", ""))
+        elif completed_count == 0 and not df_filtered.empty :
+             league_stats_tree.insert("", "end", values=("No completed bets in period...", "", "", "", "", "", "", "", ""))
+        elif df_filtered.empty:
+             league_stats_tree.insert("", "end", values=("No bets in selected period...", "", "", "", "", "", "", "", ""))
+        # --- End "By League" Tab Update ---
+
+        # --- Update "By Odds" Tab ---
+        # Clear previous entries
+        for item in odds_stats_tree.get_children():
+            odds_stats_tree.delete(item)
+            
+        if completed_count > 0:
+            try:
+                # Define odds bins and labels
+                odds_bins = [0, 1.5, 2.0, 3.0, 5.0, float('inf')] # Bins: 0-1.49, 1.5-1.99, 2.0-2.99, 3.0-4.99, 5.0+
+                odds_labels = ['< 1.50', '1.50 - 1.99', '2.00 - 2.99', '3.00 - 4.99', '5.00+']
+
+                # Create a working copy with Profit (already done for league stats)
+                df_working_odds = df_filtered.copy()
+                # Ensure the Profit column exists (it should from league calculation part)
+                if 'Profit' not in df_working_odds.columns:
+                     df_working_odds['Profit'] = df_working_odds.apply(calculate_profit, axis=1)
+
+                # Assign odds range category to each bet
+                # Ensure Odds column is numeric
+                df_working_odds['Odds'] = pd.to_numeric(df_working_odds['Odds'], errors='coerce')
+                df_working_odds.dropna(subset=['Odds'], inplace=True) # Drop rows where Odds couldn't be parsed
                 
-                # Append dictionary with all calculated stats for this league
-                league_stats.append({
-                    "League": league, "Total Bets": lg_total_bets, "Wins": lg_wins,
-                    "Losses": lg_losses, "Win Rate": lg_win_rate, "Total Stake": lg_total_stake,
-                    "Total Profit": lg_total_profit, "ROI": lg_roi, "Avg Stake": lg_avg_stake,
-                    "Avg Odds": lg_avg_odds, "Biggest Win": lg_biggest_win, "Biggest Loss": lg_biggest_loss
-                })
-    # --- END Per-League Calculation Loop --- 
+                df_working_odds['Odds Range'] = pd.cut(df_working_odds['Odds'], bins=odds_bins, labels=odds_labels, right=False, include_lowest=True)
 
-    # --- Display Per-League Stats in Treeview ---
-    # Add Separator
-    ttk.Separator(stats_content_frame, orient='horizontal').grid(row=row_index, column=0, sticky="ew", pady=15, padx=10)
-    row_index += 1
-    # Add Title
-    ttk.Label(stats_content_frame, text="Stats by League",
-              font=("Segoe UI", 13, "bold"), background="#313131", foreground="#03A9F4").grid(row=row_index, column=0, pady=(0, 5), sticky="n")
-    row_index += 1
-    
-    league_tree_frame = tk.Frame(stats_content_frame, bg="#313131")
-    league_tree_frame.grid(row=row_index, column=0, sticky="nsew", padx=10, pady=(0, 10)) # Increased bottom pady
-    league_tree_frame.grid_rowconfigure(0, weight=1)
-    league_tree_frame.grid_columnconfigure(0, weight=1)
-    row_index += 1 
+                # Group by the new Odds Range category
+                odds_groups = df_working_odds.groupby('Odds Range', observed=False) # observed=False includes all categories even if empty
 
-    league_columns = ("League", "Bets", "Wins", "Losses", "Win %", "Stake", "Profit", "ROI %", 
-                      "Avg Stake", "Avg Odds", "Max Win", "Max Loss")
-    league_tree = ttk.Treeview(league_tree_frame, columns=league_columns, show="headings", style="Treeview", height=8)
-    # ... (Headings setup - check they match league_columns exactly) ...
-    for col in league_columns: league_tree.heading(col, text=col) # Simpler heading setup
-    # --- Column Widths (Adjust as needed) ---
-    league_tree.column("League", width=180, anchor="w"); league_tree.column("Bets", width=50, anchor="center")
-    league_tree.column("Wins", width=50, anchor="center"); league_tree.column("Losses", width=50, anchor="center")
-    league_tree.column("Win %", width=70, anchor="e"); league_tree.column("Stake", width=100, anchor="e")
-    league_tree.column("Profit", width=100, anchor="e"); league_tree.column("ROI %", width=70, anchor="e")
-    league_tree.column("Avg Stake", width=80, anchor="e"); league_tree.column("Avg Odds", width=60, anchor="center")
-    league_tree.column("Max Win", width=80, anchor="e"); league_tree.column("Max Loss", width=80, anchor="e")
-    
-    league_scrollbar = ttk.Scrollbar(league_tree_frame, orient="vertical", command=league_tree.yview)
-    league_tree.configure(yscrollcommand=league_scrollbar.set)
-    league_tree.grid(row=0, column=0, sticky="nsew"); league_scrollbar.grid(row=0, column=1, sticky="ns")
+                # Aggregate stats (similar to leagues)
+                odds_stats = odds_groups.agg(
+                    total_bets = pd.NamedAgg(column='Match', aggfunc='size'),
+                    wins = pd.NamedAgg(column='Result', aggfunc=lambda x: (x == 'Win').sum()),
+                    losses = pd.NamedAgg(column='Result', aggfunc=lambda x: (x == 'Loss').sum()),
+                    total_stake_finished = pd.NamedAgg(column='Stake', aggfunc=lambda x: x[df_working_odds.loc[x.index, 'Result'].isin(['Win', 'Loss'])].sum()),
+                    total_profit = pd.NamedAgg(column='Profit', aggfunc='sum')
+                ).reset_index()
 
-    # Populate the league Treeview from the calculated league_stats list
-    if not league_stats:
-        # ... (handle no data) ...
-        try:
-            league_tree.insert("", "end", values=("No league data for this period.",) + ("",)*(len(league_columns)-1), tags=('pending',))
-            logging.info("Displayed 'No league data' message in league stats Treeview.")
-        except Exception as e:
-            logging.error(f"Failed to insert 'No league data' message into league_tree: {e}")
-    else:
-        # This block needs to be indented under the else
-        league_stats_sorted = sorted(league_stats, key=lambda x: x["Total Profit"], reverse=True)
-        logging.debug(f"Populating league_tree with sorted data ({len(league_stats_sorted)} leagues): {league_stats_sorted}")
-        for i, stats in enumerate(league_stats_sorted):
-            # Ensure stats dictionary has all keys expected by league_columns
-            profit_str = f"{stats.get('Total Profit', 0.0):+.2f}"
-            roi_str = f"{stats.get('ROI', 0.0):.1f}%"
-            avg_stake_str = f"€{stats.get('Avg Stake', 0.0):.2f}"
-            avg_odds_str = f"{stats.get('Avg Odds', 0.0):.2f}"
-            max_win_str = f"€{stats.get('Biggest Win', 0.0):+.2f}"
-            max_loss_str = f"€{stats.get('Biggest Loss', 0.0):.2f}"
-            tags = ['win' if stats.get('Total Profit', 0) > 0 else ('loss' if stats.get('Total Profit', 0) < 0 else 'pending')]
-            if i % 2 == 1: tags.append('striped')
-            league_tree.insert("", "end", values=(
-                stats.get("League", "N/A"), stats.get("Total Bets", 0),
-                stats.get("Wins", 0), stats.get("Losses", 0),
-                f"{stats.get('Win Rate', 0.0):.1f}%", f"€{stats.get('Total Stake', 0.0):.2f}",
-                profit_str, roi_str, avg_stake_str, avg_odds_str,
-                max_win_str, max_loss_str
-            ), tags=tuple(tags))
+                # Calculate derived stats
+                odds_stats['Completed'] = odds_stats['wins'] + odds_stats['losses']
+                odds_stats['Win Rate'] = (odds_stats['wins'] / odds_stats['Completed'] * 100).where(odds_stats['Completed'] > 0, 0)
+                odds_stats['ROI'] = (odds_stats['total_profit'] / odds_stats['total_stake_finished'] * 100).where(odds_stats['total_stake_finished'] > 0, 0)
 
-    # --- Display Performance by Odds Range --- 
-    # ... (Odds range calculations remain the same) ...
-    ttk.Label(stats_content_frame, text="Performance by Odds Range",
-              font=("Segoe UI", 13, "bold"), background="#313131", foreground="#03A9F4").grid(row=row_index, column=0, pady=(10, 5), sticky="n")
-    row_index += 1
-    odds_tree_frame = tk.Frame(stats_content_frame, bg="#313131")
-    odds_tree_frame.grid(row=row_index, column=0, sticky="nsew", padx=10, pady=(0, 10)) # Increased bottom pady
-    # ... (Odds tree setup and population remain the same) ...
-    row_index += 1
+                # Populate Treeview (By Odds)
+                if odds_stats.empty:
+                     odds_stats_tree.insert("", "end", values=("No odds data to display...", "", "", "", "", "", "", "", ""))
+                else:
+                    for index, row in odds_stats.iterrows():
+                        profit_val = row.get('total_profit', 0)
+                        
+                        # --- Determine Profit Symbol/Color --- 
+                        profit_symbol = ""
+                        if profit_val > 0:
+                            profit_symbol = f'\U0001F7E2 ' # Green Circle
+                        elif profit_val < 0:
+                            profit_symbol = f'\U0001F534 ' # Red Circle
+                        else:
+                            profit_symbol = "  " # Space for alignment
+                        
+                        # Format values
+                        range_name = row.get('Odds Range', 'N/A')
+                        bets_count = row.get('total_bets', 0)
+                        completed_val = row.get('Completed', 0)
+                        wins_val = row.get('wins', 0)
+                        losses_val = row.get('losses', 0)
+                        win_rate_str = f"{row.get('Win Rate', 0):.1f}%"
+                        stake_str = f"€{row.get('total_stake_finished', 0):.2f}"
+                        # Prepend symbol to the formatted profit string
+                        profit_str = f"{profit_symbol}€{profit_val:+.2f}"
+                        roi_str = f"{row.get('ROI', 0):.1f}%"
+                        
+                        # Insert row without tags
+                        odds_stats_tree.insert("", "end", values=(
+                            range_name, bets_count, completed_val, wins_val, losses_val,
+                            win_rate_str, stake_str, profit_str, roi_str
+                        )) # No tags
+            except Exception as odds_tab_ex:
+                 # Ensure correct alignment for except block
+                 logging.error(f"Error populating 'By Odds' tab: {odds_tab_ex}", exc_info=True)
+                 odds_stats_tree.insert("", "end", values=("Error loading odds data...", "", "", "", "", "", "", "", ""))
+                 
+        elif completed_count == 0: # Handle case with no completed bets for any odds calc
+             # Ensure correct alignment for elif blocks
+             odds_stats_tree.insert("", "end", values=("No completed bets in period...", "", "", "", "", "", "", "", ""))
+        elif df_filtered.empty:
+             odds_stats_tree.insert("", "end", values=("No bets in selected period...", "", "", "", "", "", "", "", ""))
+        # --- End "By Odds" Tab Update ---
 
-    # --- Display Performance by Team --- 
-    # ... (Team calculations remain the same) ...
-    ttk.Label(stats_content_frame, text="Performance by Team",
-              font=("Segoe UI", 13, "bold"), background="#313131", foreground="#03A9F4").grid(row=row_index, column=0, pady=(10, 5), sticky="n")
-    row_index += 1
-    team_tree_frame = tk.Frame(stats_content_frame, bg="#313131")
-    team_tree_frame.grid(row=row_index, column=0, sticky="nsew", padx=10, pady=(0, 10))
-    stats_content_frame.grid_rowconfigure(row_index, weight=1) # Make this last row expand
-    # ... (Team tree setup and population remain the same) ...
+        logging.info(f"Stats updated for period '{period_text}'")
 
-    logging.info(f"Stats display updated successfully for period: {period}.")
+    except Exception as e:
+        logging.error(f"Error calculating specific stats for period '{period_text}': {e}", exc_info=True)
+        for key, label in stats_labels.items():
+             update_label(key, label.cget('text').split(':')[0], value="Error") # Use helper for error state
+    finally:
+        logging.info("--- update_stats_display finished ---")
 
 def show_stats_page():
-    """Hides main frames and shows the statistics frame."""
-    global stats_frame 
-    logging.info("Switching to Stats page.")
-    
-    # Hide ALL main card frames
-    br_frame.grid_forget()
-    feedback_frame.grid_forget()
-    league_filter_frame.grid_forget()
-    history_frame.grid_forget()
-    
-    # Show stats frame using grid in COLUMN 1, spanning ALL rows
-    if not stats_frame.winfo_exists():
-         stats_frame = tk.Frame(root, bg="#212121")
-    stats_frame.grid(row=0, column=1, rowspan=4, sticky="nsew", padx=10, pady=5) 
-    stats_frame.grid_rowconfigure(2, weight=1) 
-    stats_frame.grid_columnconfigure(0, weight=1)
-    
-    # Clear previous stats widgets (important!)
-    for widget in stats_frame.winfo_children():
-        widget.destroy()
-    
-    # --- Recreate the layout within stats_frame (using cards soon) ---
-    back_button_frame = tk.Frame(stats_frame, bg="#212121")
-    back_button_frame.grid(row=0, column=0, sticky="ew", pady=(5, 10))
-    ttk.Button(back_button_frame, text="← Back to Bets", command=show_main_page, style="TButton").pack(side="left", padx=10)
-    
-    period_frame = tk.Frame(stats_frame, bg="#212121")
-    period_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-    ttk.Label(period_frame, text="Select Period:", font=("Segoe UI", 11, "bold"), foreground="#03A9F4").pack(side="left", padx=(0, 10))
-    ttk.Button(period_frame, text="Today", command=lambda: update_stats_display('day'), style="TButton").pack(side="left", padx=5)
-    ttk.Button(period_frame, text="Last 7 Days", command=lambda: update_stats_display('week'), style="TButton").pack(side="left", padx=5)
-    ttk.Button(period_frame, text="Last 30 Days", command=lambda: update_stats_display('month'), style="TButton").pack(side="left", padx=5)
-    ttk.Button(period_frame, text="All Time", command=lambda: update_stats_display('all'), style="TButton").pack(side="left", padx=5)
-    
-    # --- Stats Content Frame (will hold the stat cards) ---
-    # Give this the card background color
-    stats_content_frame = tk.Frame(stats_frame, bg="#313131", bd=1, relief="ridge") 
-    stats_content_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-    stats_content_frame.grid_columnconfigure(0, weight=1)
-    # Row configuration will happen dynamically in update_stats_display
-
-    # Delay the initial stats update 
-    stats_content_frame.after(100, lambda: update_stats_display('all'))
+    """Hides the main frames and shows the stats frame."""
+    logging.info("--- show_stats_page entered ---") # Log entry
+    # logging.debug("Switching to Stats Page")
+    # Hide main frames
+    br_frame.grid_remove()
+    feedback_frame.grid_remove()
+    league_filter_frame.grid_remove()
+    history_frame.grid_remove()
+    # Show stats frame
+    stats_frame.grid(row=0, column=1, rowspan=4, sticky="nsew", padx=20, pady=10) # Span rows 0-3 in the main grid
+    # Update the stats display when showing the page
+    update_stats_display()
+    # --- DEBUGGING START ---
+    # print(f"DEBUG: stats_total_bets_label text = '{stats_total_bets_label.cget('text')}'") # Removed debug
+    # print(f"DEBUG: stats_win_rate_label text = '{stats_win_rate_label.cget('text')}'") # Removed debug
+    # --- DEBUGGING END ---
 
 # --- End of Stats Page Functionality ---
-
 
 # --- GUI Setup ---
 root = TkinterDnD.Tk()
 logging.info("TkinterDnD root created.")
 root.title("Betting Calculator")
-root.geometry("1920x1080") # New Full HD size
+root.geometry("1600x900") # <-- Increased initial size to 1600x900
 
 # --- Set App Icon ---
 try:
@@ -1413,7 +1822,7 @@ except Exception as e:
     logging.error(f"Unexpected error setting application icon: {e}", exc_info=True)
 # --- End App Icon ---
 
-root.configure(bg="#212121") # Darker background
+root.configure(bg="#2D2D2D") # Use defined background color
 
 # Variables
 bankroll = load_bankroll()
@@ -1421,8 +1830,6 @@ history = load_history()
 
 # Styles - Apply a more consistent dark theme
 style = ttk.Style()
-# Configure a theme (e.g., 'clam', 'alt', 'default', 'classic')
-# 'clam' or 'alt' often work well for custom styling
 try:
     style.theme_use('clam') 
     logging.info("Using 'clam' theme.")
@@ -1432,158 +1839,434 @@ except tk.TclError:
 
 # General widget styling
 style.configure(".", 
-                background="#212121", 
-                foreground="#E0E0E0", # Light gray text
+                background="#2D2D2D", 
+                foreground="#EAEAEA", # Light gray text
                 font=("Segoe UI", 10)) 
-style.configure("TButton", 
-                font=("Segoe UI", 10), 
-                padding=6,
-                background="#424242", # Darker button
-                foreground="#FFFFFF") # White text
-style.map("TButton",
-          background=[('active', '#616161')]) # Slightly lighter on hover/press
+style.configure("TFrame", background="#2D2D2D") # Ensure frames default to main BG
 
-# Labels within the main background
+# --- Button Style --- 
+style.configure("TButton", 
+                font=("Segoe UI", 10, "normal"), # Changed from bold
+                padding=(10, 6), # Adjusted padding (horizontal, vertical)
+                background="#555555", # Medium gray button
+                foreground="#EAEAEA",
+                borderwidth=0, # Flat look
+                relief="flat") 
+style.map("TButton",
+          background=[('active', "#666666")], # Slightly lighter on hover/press
+          foreground=[('active', "#EAEAEA")]) 
+
+# --- Label Styles --- 
+# Default Label on main background
 style.configure("TLabel", 
                 font=("Segoe UI", 11), 
-                background="#212121", 
-                foreground="#E0E0E0")
-# Labels INSIDE cards/frames
+                background="#2D2D2D", 
+                foreground="#EAEAEA")
+# Label inside a card
 style.configure("Card.TLabel", 
                 font=("Segoe UI", 10), 
-                background="#313131", # Card background
-                foreground="#E0E0E0")
+                background="#3C3C3C", # Slightly lighter card background
+                foreground="#A0A0A0") # Muted text inside cards
+# Card Title Label
 style.configure("CardTitle.TLabel", 
-                font=("Segoe UI", 12, "bold"), 
-                background="#313131", 
-                foreground="#03A9F4") # Accent color title
+                font=("Segoe UI", 13, "bold"), 
+                background="#3C3C3C", # Slightly lighter card background
+                foreground=TEXT_COLOR) # <-- Changed from #5AC8FA to TEXT_COLOR
+# Feedback Label
 style.configure("Feedback.TLabel", # Feedback specifically
-                font=("Segoe UI", 10), 
-                background="#313131", # Match card background
-                foreground="#BDBDBD", 
+                font=("Segoe UI", 10, "italic"), 
+                background="#3C3C3C", # Match card background
+                foreground="#A0A0A0", 
                 padding=(5, 5))
+# Bankroll Amount Label
+style.configure("Bankroll.TLabel", 
+                font=("Segoe UI", 18, "bold"), 
+                background="#3C3C3C", # Slightly lighter card background
+                foreground="#EAEAEA") # White text
 
+# --- Combobox Style ---
 style.configure("TCombobox", 
                 font=("Segoe UI", 10),
-                background="#424242",
-                foreground="#FFFFFF",
-                fieldbackground="#424242",
-                selectbackground="#616161",
-                selectforeground="#FFFFFF")
-style.map('TCombobox', fieldbackground=[('readonly', '#424242')])
-style.map('TCombobox', selectbackground=[('readonly', '#616161')])
-style.map('TCombobox', selectforeground=[('readonly', '#FFFFFF')])
+                padding=5,
+                background="#555555",
+                foreground="#EAEAEA",
+                fieldbackground="#555555",
+                arrowcolor="#A0A0A0",
+                selectbackground="#666666",
+                selectforeground="#EAEAEA",
+                borderwidth=0,
+                relief="flat")
+# Ensure dropdown list uses similar colors
+root.option_add('*TCombobox*Listbox.background', "#555555")
+root.option_add('*TCombobox*Listbox.foreground', "#EAEAEA")
+root.option_add('*TCombobox*Listbox.selectBackground', "#007AFF")
+root.option_add('*TCombobox*Listbox.selectForeground', "#EAEAEA")
 
-# Configure Treeview colors and fonts for dark theme
+style.map('TCombobox', fieldbackground=[('readonly', "#555555")])
+style.map('TCombobox', selectbackground=[('readonly', "#666666")])
+style.map('TCombobox', selectforeground=[('readonly', "#EAEAEA")])
+
+# --- Entry Style --- 
+style.configure("TEntry", 
+                font=("Segoe UI", 10),
+                foreground="#EAEAEA",          # White text
+                fieldbackground="#444444",    # Dark gray background
+                insertcolor='#EAEAEA',        # White cursor
+                borderwidth=0,
+                relief="flat")
+style.map("TEntry",
+          foreground=[('disabled', '#888888')], # Grayer text when disabled
+          fieldbackground=[('disabled', '#555555')])
+
+# --- Treeview Style --- 
 style.configure("Treeview",
                 font=("Segoe UI", 10),
-                background="#313131", # Match card background
-                foreground="#E0E0E0",
-                fieldbackground="#313131",
-                rowheight=28) 
+                background="#3C3C3C", 
+                foreground="#EAEAEA",
+                fieldbackground="#3C3C3C",
+                rowheight=28, # Slightly taller rows
+                borderwidth=0,
+                relief="flat") 
 
 style.configure("Treeview.Heading",
                 font=("Segoe UI", 10, "bold"),
-                background="#424242", # Header background
-                foreground="#03A9F4", # Light blue header text
-                padding=(8, 4),
-                relief="flat") 
+                background="#555555", # Match card background for seamless look
+                foreground="#5AC8FA", # Heading color
+                padding=(10, 5),
+                relief="flat",
+                borderwidth=0) 
 style.map("Treeview.Heading",
-          background=[('active', '#525252')])
+          background=[('active', "#666666")]) # Keep heading background same on click
 
 # Selected item style
 style.map('Treeview',
-          background=[('selected', '#515151')], 
-          foreground=[('selected', '#FFFFFF')])
+          background=[('selected', "#007AFF")], # Use accent color for selection
+          foreground=[('selected', "#EAEAEA")])
 
-# Tag configurations (Foreground colors)
-style.configure("win.Treeview", foreground="#81C784") 
-style.configure("loss.Treeview", foreground="#E57373") 
-style.configure("pending.Treeview", foreground="#E0E0E0") 
-style.configure("striped.Treeview", background="#3A3A3A") # Stripe background
+# Tag configurations (Foreground colors for Result column)
+# Note: We use foreground for the Result text itself based on the tag.
+style.configure("win.Treeview", foreground="#34C759") 
+style.configure("loss.Treeview", foreground="#FF3B30") 
+style.configure("pending.Treeview", foreground="#A0A0A0") # Muted for pending
 
-# Card Frame Style (using tk.Frame as base)
-card_style = {
-    "bg": "#313131",
-    "bd": 1, # Subtle border
-    "relief": "ridge" # Subtle border relief
-}
+# Stripe tag - slightly different background for alternate rows
+# Using a slightly darker shade of the card background for striping
+#STRIPE_COLOR = "#353535" # Adjusted stripe color slightly
+#style.configure("striped.Treeview", background=STRIPE_COLOR)
+# Ensure selected striped rows still use the main selection color
+#style.map('Treeview',
+#         background=[('selected', 'striped', "#007AFF"), ('selected', "#007AFF")],
+#         foreground=[('selected', "#EAEAEA")])
+
+# --- Card Frame Style (using tk.Frame as base) ---
+# We will apply colors directly when creating frames now, instead of this dict
+# card_style = {
+#     "bg": CARD_BG_COLOR,
+#     "bd": 0, # No border
+#     "relief": "flat" 
+# }
+
+# --- Separator Style ---
+style.configure("TSeparator", background="#505050")
+
 
 # --- Main Frames Setup ---
-# Replace direct frame creation with styled frames
-br_frame = tk.Frame(root, **card_style)
-# Remove upload frame for now, simplify drop target feedback
-# upload_frame = tk.Frame(root, **card_style)
-feedback_frame = tk.Frame(root, **card_style) # Frame for feedback label
-league_filter_frame = tk.Frame(root, **card_style)
-history_frame = tk.Frame(root, **card_style)
-stats_frame = tk.Frame(root, bg="#212121") # Stats main container still uses root bg
+# Create frames directly with the card background color
+br_frame = tk.Frame(root, bg="#3C3C3C")
+feedback_frame = tk.Frame(root, bg="#3C3C3C") # Frame for feedback label
+league_filter_frame = tk.Frame(root, bg="#3C3C3C")
+history_frame = tk.Frame(root, bg="#3C3C3C")
+stats_frame = tk.Frame(root, bg="#2D2D2D") # Stats main container still uses root bg
 
-# --- Bankroll Frame Content ---
-br_frame.grid_columnconfigure((0, 4), weight=1) # Keep centering config
-br_frame.grid_columnconfigure((1, 2, 3), weight=0)
+# --- Stats Frame Content - REBUILD with TABS ---
 
+# Configure Grid for stats_frame (main container for back button, filters, notebook)
+stats_frame.grid_columnconfigure(0, weight=1)
+stats_frame.grid_rowconfigure(0, weight=0) # Back button row
+stats_frame.grid_rowconfigure(1, weight=0) # Time filter row
+stats_frame.grid_rowconfigure(2, weight=1) # Notebook row (expands)
+
+# --- Back Button --- (Remains at top left of stats_frame)
+# Need to ensure this button is created before the notebook if it needs to be visually above it
+back_button_stats = ttk.Button(stats_frame, text="← Back to Bets", command=show_main_page, style="TButton")
+back_button_stats.grid(row=0, column=0, padx=20, pady=(10,5), sticky="nw") # Adjust padding
+
+# --- Time Period Filters --- (Remain below back button)
+time_filter_frame = tk.Frame(stats_frame, bg="#2D2D2D")
+time_filter_frame.grid(row=1, column=0, pady=(0, 10), padx=20, sticky="ew")
+ttk.Label(time_filter_frame, text="Select Period:", background="#2D2D2D", foreground="#EAEAEA").pack(side=tk.LEFT, padx=(0, 10))
+ttk.Button(time_filter_frame, text="Today", command=lambda: update_stats_display(period='today'), style="TButton").pack(side=tk.LEFT, padx=5)
+ttk.Button(time_filter_frame, text="Last 7 Days", command=lambda: update_stats_display(period='7days'), style="TButton").pack(side=tk.LEFT, padx=5)
+ttk.Button(time_filter_frame, text="Last 30 Days", command=lambda: update_stats_display(period='30days'), style="TButton").pack(side=tk.LEFT, padx=5)
+ttk.Button(time_filter_frame, text="All Time", command=lambda: update_stats_display(period='all'), style="TButton").pack(side=tk.LEFT, padx=5)
+
+# --- Notebook for Tabs ---
+# Define style specifically for the notebook widget
+notebook_style = ttk.Style()
+notebook_style.configure('Stats.TNotebook', tabposition='nw') # Place tabs at top-left
+notebook_style.configure('Stats.TNotebook', background="#2D2D2D", borderwidth=0)
+notebook_style.configure('Stats.TNotebook.Tab',
+                         background="#555555",
+                         foreground="#EAEAEA",
+                         padding=[10, 5],
+                         font=("Segoe UI", 10),
+                         borderwidth=0)
+notebook_style.map('Stats.TNotebook.Tab',
+                   background=[('selected', "#3C3C3C"), ('active', "#666666")],
+                   foreground=[('selected', TEXT_COLOR), ('active', TEXT_COLOR)])
+
+stats_notebook = ttk.Notebook(stats_frame, style='Stats.TNotebook')
+stats_notebook.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 10))
+
+# --- Create Frames for Tabs --- (Use main background color)
+overview_tab = tk.Frame(stats_notebook, bg="#2D2D2D")
+by_league_tab = tk.Frame(stats_notebook, bg="#2D2D2D")
+by_odds_tab = tk.Frame(stats_notebook, bg="#2D2D2D")
+
+# Add tabs to notebook
+stats_notebook.add(overview_tab, text='Overview')
+stats_notebook.add(by_league_tab, text='By League')
+stats_notebook.add(by_odds_tab, text='By Odds')
+
+# --- Configure Grid within Overview Tab --- 
+overview_tab.grid_columnconfigure(0, weight=1) # Spacer
+overview_tab.grid_columnconfigure(1, weight=0) # Main stats col
+overview_tab.grid_columnconfigure(2, weight=1) # Spacer
+overview_tab.grid_columnconfigure(3, weight=0) # Top leagues col
+overview_tab.grid_columnconfigure(4, weight=1) # Spacer
+overview_tab.grid_rowconfigure(0, weight=0) # Title row
+overview_tab.grid_rowconfigure(1, weight=1) # Content row
+
+# --- Move Existing Content to Overview Tab --- 
+# Stats Title (now belongs conceptually to the tab, but might be redundant with tab name)
+stats_period_title = ttk.Label(overview_tab, text="Statistics for: All Time", style="CardTitle.TLabel", foreground="#5AC8FA", background="#2D2D2D")
+stats_period_title.grid(row=0, column=1, columnspan=3, pady=(15, 10), sticky="w") # Added top padding
+
+# Main Stats Area (inside overview_tab)
+stats_content_frame = tk.Frame(overview_tab, bg="#2D2D2D")
+stats_content_frame.grid(row=1, column=1, sticky="nw", padx=(0, 20))
+
+# Labels Dictionary (Ensure it's defined before use)
+stats_labels = {} # Initialize dictionary to store labels
+
+def create_stat_label(parent, key, text):
+    # This function now creates labels inside stats_content_frame
+    label = ttk.Label(parent, text=f"{text}: -", style="TLabel", background="#2D2D2D")
+    label.pack(anchor="w", pady=1)
+    stats_labels[key] = label # Store label using its key
+
+# Create the labels within stats_content_frame
+create_stat_label(stats_content_frame, "total_bets", "Total Bets")
+create_stat_label(stats_content_frame, "completed", "Completed")
+create_stat_label(stats_content_frame, "pending", "Pending")
+create_stat_label(stats_content_frame, "wins", "Wins")
+create_stat_label(stats_content_frame, "losses", "Losses")
+create_stat_label(stats_content_frame, "win_rate", "Win Rate")
+# Add visual separators using ttk.Separator
+ttk.Separator(stats_content_frame, orient='horizontal').pack(fill='x', pady=5)
+create_stat_label(stats_content_frame, "total_stake", "Total Stake")
+create_stat_label(stats_content_frame, "total_profit", "Total Profit")
+create_stat_label(stats_content_frame, "roi", "ROI")
+ttk.Separator(stats_content_frame, orient='horizontal').pack(fill='x', pady=5)
+create_stat_label(stats_content_frame, "avg_stake", "Avg Stake")
+create_stat_label(stats_content_frame, "avg_odds", "Avg Odds (Placed)")
+create_stat_label(stats_content_frame, "biggest_win", "Biggest Win")
+create_stat_label(stats_content_frame, "biggest_loss", "Biggest Loss")
+ttk.Separator(stats_content_frame, orient='horizontal').pack(fill='x', pady=5)
+create_stat_label(stats_content_frame, "longest_win_streak", "Longest Win Streak")
+create_stat_label(stats_content_frame, "longest_loss_streak", "Longest Loss Streak")
+create_stat_label(stats_content_frame, "profit_std_dev", "Profit Std Dev")
+
+# Top Leagues Area (inside overview_tab)
+top_leagues_frame = tk.Frame(overview_tab, bg="#2D2D2D")
+top_leagues_frame.grid(row=1, column=3, sticky="nw", padx=(20, 0))
+
+top_leagues_title = ttk.Label(top_leagues_frame, text="Top 3 Profitable Leagues", style="CardTitle.TLabel", foreground="#5AC8FA", background="#2D2D2D")
+top_leagues_title.pack(anchor="w", pady=(0, 10))
+
+# --- Create 3 dedicated labels for top leagues --- 
+top_league_labels = []
+for i in range(3):
+    # Create label with default text and styling
+    label = ttk.Label(top_leagues_frame, 
+                      text="", 
+                      justify=tk.LEFT, 
+                      style="TLabel", 
+                      background="#2D2D2D", 
+                      foreground=TEXT_COLOR) # Start with default text color
+    label.pack(anchor="w", pady=1) # Pack below title
+    top_league_labels.append(label)
+# --- End dedicated labels ---
+
+# --- Placeholder Content for Other Tabs ---
+# Remove placeholder label
+# ttk.Label(by_league_tab, text="League statistics breakdown coming soon...", style="TLabel").pack(padx=20, pady=20)
+
+# --- "By League" Tab Content ---
+by_league_tab.grid_rowconfigure(0, weight=1)
+by_league_tab.grid_columnconfigure(0, weight=1)
+
+league_stats_columns = ("League", "Bets", "Completed", "Wins", "Losses", "Win Rate", "Stake", "Profit", "ROI")
+league_stats_tree = ttk.Treeview(by_league_tab, 
+                                 columns=league_stats_columns, 
+                                 show="headings", 
+                                 style="Treeview") # Reuse main Treeview style
+
+# Configure Headings
+league_stats_tree.heading("League", text="League")
+league_stats_tree.heading("Bets", text="Bets")
+league_stats_tree.heading("Completed", text="Completed")
+league_stats_tree.heading("Wins", text="Wins")
+league_stats_tree.heading("Losses", text="Losses")
+league_stats_tree.heading("Win Rate", text="Win Rate (%)")
+league_stats_tree.heading("Stake", text="Stake (€)")
+league_stats_tree.heading("Profit", text="Profit (€)")
+league_stats_tree.heading("ROI", text="ROI (%)")
+
+# Configure Column Widths and Anchors
+league_stats_tree.column("League", width=200, anchor="w")
+league_stats_tree.column("Bets", width=60, anchor="center")
+league_stats_tree.column("Completed", width=80, anchor="center")
+league_stats_tree.column("Wins", width=60, anchor="center")
+league_stats_tree.column("Losses", width=60, anchor="center")
+league_stats_tree.column("Win Rate", width=90, anchor="e")
+league_stats_tree.column("Stake", width=100, anchor="e")
+league_stats_tree.column("Profit", width=100, anchor="e")
+league_stats_tree.column("ROI", width=90, anchor="e")
+
+# Scrollbar
+league_stats_scrollbar = ttk.Scrollbar(by_league_tab, orient="vertical", command=league_stats_tree.yview)
+league_stats_tree.configure(yscrollcommand=league_stats_scrollbar.set)
+
+# Grid layout
+league_stats_tree.grid(row=0, column=0, sticky='nsew', padx=(10, 0), pady=10)
+league_stats_scrollbar.grid(row=0, column=1, sticky='ns', padx=(0, 10), pady=10)
+
+# Add tags for coloring Profit/ROI (similar to main history table)
+league_stats_tree.tag_configure('profit_win', foreground=WIN_COLOR)
+league_stats_tree.tag_configure('profit_loss', foreground=LOSS_COLOR)
+# --- End "By League" Tab Content ---
+
+# --- "By Odds" Tab Content ---
+# Remove placeholder label
+# ttk.Label(by_odds_tab, text="Odds range statistics breakdown coming soon...", style="TLabel").pack(padx=20, pady=20)
+
+by_odds_tab.grid_rowconfigure(0, weight=1)
+by_odds_tab.grid_columnconfigure(0, weight=1)
+
+odds_stats_columns = ("Range", "Bets", "Completed", "Wins", "Losses", "Win Rate", "Stake", "Profit", "ROI")
+odds_stats_tree = ttk.Treeview(by_odds_tab,
+                               columns=odds_stats_columns,
+                               show="headings",
+                               style="Treeview")
+
+# Configure Headings
+odds_stats_tree.heading("Range", text="Odds Range")
+odds_stats_tree.heading("Bets", text="Bets")
+odds_stats_tree.heading("Completed", text="Completed")
+odds_stats_tree.heading("Wins", text="Wins")
+odds_stats_tree.heading("Losses", text="Losses")
+odds_stats_tree.heading("Win Rate", text="Win Rate (%)")
+odds_stats_tree.heading("Stake", text="Stake (€)")
+odds_stats_tree.heading("Profit", text="Profit (€)")
+odds_stats_tree.heading("ROI", text="ROI (%)")
+
+# Configure Column Widths and Anchors
+odds_stats_tree.column("Range", width=120, anchor="w") # Range might be shorter text
+odds_stats_tree.column("Bets", width=60, anchor="center")
+odds_stats_tree.column("Completed", width=80, anchor="center")
+odds_stats_tree.column("Wins", width=60, anchor="center")
+odds_stats_tree.column("Losses", width=60, anchor="center")
+odds_stats_tree.column("Win Rate", width=90, anchor="e")
+odds_stats_tree.column("Stake", width=100, anchor="e")
+odds_stats_tree.column("Profit", width=100, anchor="e")
+odds_stats_tree.column("ROI", width=90, anchor="e")
+
+# Scrollbar
+odds_stats_scrollbar = ttk.Scrollbar(by_odds_tab, orient="vertical", command=odds_stats_tree.yview)
+odds_stats_tree.configure(yscrollcommand=odds_stats_scrollbar.set)
+
+# Grid layout
+odds_stats_tree.grid(row=0, column=0, sticky='nsew', padx=(10, 0), pady=10)
+odds_stats_scrollbar.grid(row=0, column=1, sticky='ns', padx=(0, 10), pady=10)
+
+# Add tags for coloring Profit/ROI
+odds_stats_tree.tag_configure('profit_win', foreground=WIN_COLOR)
+odds_stats_tree.tag_configure('profit_loss', foreground=LOSS_COLOR)
+# --- End "By Odds" Tab Content ---
+
+# --- End Stats Frame Content REBUILD with TABS ---
+
+# --- Bankroll Frame Content --- 
+# ... existing code ...
+
+# --- Bankroll Frame Content --- 
+# Add padding inside the frame
+br_frame.grid_columnconfigure(0, weight=1) # Allow button column to center/space
+
+# Use the specific Bankroll label style
 br_label = ttk.Label(br_frame, 
                     text=f"Bankroll: €{bankroll:.2f}", 
-                    foreground="#FFFFFF", # White text on card
-                    background="#313131", # Match card background
-                    font=("Segoe UI", 14, "bold"))
-br_label.grid(row=0, column=1, columnspan=3, pady=(10, 10))
+                    style="Bankroll.TLabel")
+br_label.grid(row=0, column=0, columnspan=3, pady=(15, 10), padx=20) # Increased padding
 
-button_style = {"width": 15}
-ttk.Button(br_frame, text="Reset Bankroll", 
+# Button Frame for better layout
+button_frame = tk.Frame(br_frame, bg="#3C3C3C")
+button_frame.grid(row=1, column=0, columnspan=3, pady=(5, 15), padx=20)
+
+# Use pack within the button frame for centering/spacing
+button_style = {} # Remove fixed width
+ttk.Button(button_frame, text="Reset Bankroll", 
            command=lambda: adjust_bankroll(200 - bankroll), 
            style="TButton",
-           **button_style).grid(row=1, column=1, padx=5, pady=(5, 10))
-ttk.Button(br_frame, text="Manual Change", 
+           **button_style).pack(side=tk.LEFT, padx=10) # Add padding between buttons
+ttk.Button(button_frame, text="Manual Change", 
            command=manual_bankroll_change,
            style="TButton",
-           **button_style).grid(row=1, column=2, padx=5, pady=(5, 10))
-ttk.Button(br_frame, text="Show Stats", 
-           command=show_stats_page,
+           **button_style).pack(side=tk.LEFT, padx=10)
+ttk.Button(button_frame, text="Show Stats",
+           command=show_stats_page, # <-- Add this command back
            style="TButton",
-           **button_style).grid(row=1, column=3, padx=5, pady=(5, 10))
+           **button_style).pack(side=tk.LEFT, padx=10)
 
-# --- Drop Target Info & Feedback Frame ---
-# Make the entire root window the drop target
+
+# --- Drop Target Info & Feedback Frame --- 
 root.drop_target_register(DND_FILES)
 root.dnd_bind('<<Drop>>', on_drop) 
 logging.info("Root window registered as drop target.")
 
-feedback_frame.grid_columnconfigure(0, weight=1)
+feedback_frame.grid_columnconfigure(0, weight=1) # Allow label to expand
 
 upload_info_label = ttk.Label(feedback_frame, 
                               text="Drop Bet Screenshot Anywhere To Add", 
                               style="Card.TLabel", # Use card label style
-                              font=("Segoe UI", 11, "italic"),
-                              foreground="#BDBDBD")
-upload_info_label.grid(row=0, column=0, pady=(5, 0), padx=10)
+                              font=("Segoe UI", 10, "italic"), # Keep italic
+                              foreground="#A0A0A0")
+upload_info_label.grid(row=0, column=0, pady=(10, 2), padx=10) # Adjust padding
 
 feedback_label = ttk.Label(feedback_frame, 
                            text="App ready. Drop a screenshot.", 
-                           style="Feedback.TLabel", # Specific style for feedback
+                           style="Feedback.TLabel", 
                            wraplength=500, 
                            anchor="center") 
-feedback_label.grid(row=1, column=0, pady=(0, 5), padx=10, sticky="ew")
+feedback_label.grid(row=1, column=0, pady=(0, 10), padx=10, sticky="ew") # Adjust padding
 
 # --- League Filter Frame Content ---
 league_filter_frame.grid_columnconfigure(1, weight=1) # Allow combobox to expand a bit
 
 ttk.Label(league_filter_frame, 
           text="Filter by League:", 
-          style="CardTitle.TLabel", # Use card title style (or similar)
-          foreground="#FFFFFF", # White text on card
-          font=("Segoe UI", 11, "bold")
+          style="Card.TLabel", # Use standard muted card text
+          font=("Segoe UI", 11) # Normal weight
          ).grid(row=0, column=0, padx=(10, 5), pady=10, sticky="w")
 
 league_var = tk.StringVar(value="All Leagues")
-all_leagues = ["All Leagues"] + sorted(list(history['League'].astype(str).unique()))
+# Note: Initial population happens later
 league_combo = ttk.Combobox(league_filter_frame, 
                             textvariable=league_var,
-                            values=all_leagues,
                             state="readonly",
-                            width=40, # Adjusted width
-                            font=("Segoe UI", 10))
+                            width=35, # Adjusted width
+                            style="TCombobox") # Apply style
 league_combo.grid(row=0, column=1, padx=(0, 10), pady=10, sticky="ew")
 
 # --- History Frame Content ---
@@ -1591,36 +2274,62 @@ history_frame.grid_rowconfigure(1, weight=1) # Allow treeview row to expand
 history_frame.grid_columnconfigure(0, weight=1) # Allow treeview col to expand
 
 history_title = ttk.Label(history_frame, text="Bet History (Today)", style="CardTitle.TLabel")
-history_title.grid(row=0, column=0, columnspan=2, pady=(5, 5), padx=10, sticky="nw")
+history_title.grid(row=0, column=0, columnspan=2, pady=(10, 5), padx=10, sticky="nw") # Adjust padding
 
+# Define columns for the Treeview (structure remains same)
+columns = ("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", 
+           "Win ✅", "Loss ❌", "Delete 🗑️", "Index") 
+           
 tree = ttk.Treeview(history_frame, 
-                    columns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", "Actions", "Delete", "Index"), # Added Index column
+                    columns=columns,
                     show="headings",
-                    displaycolumns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", "Actions", "Delete"), # Hide Index column visually
+                    displaycolumns=("Match", "League", "Odds", "Stake", "Result", "Payout", "Date", 
+                                  "Win ✅", "Loss ❌", "Delete 🗑️"), 
                     height=15, 
-                    style="Treeview")
-# ... (Treeview headings and column config remains the same) ...
+                    style="Treeview") # Style applied here
 
+# --- Headings and Columns setup (remains structurally same, but styles applied via config) --- 
+# Configure Headings (Text only, style handles appearance)
+tree.heading("Match", text="Match")
+tree.heading("League", text="League")
+tree.heading("Odds", text="Odds")
+tree.heading("Stake", text="Stake")
+tree.heading("Result", text="Result")
+tree.heading("Payout", text="Payout")
+tree.heading("Date", text="Date")
+tree.heading("Win ✅", text="Win") # Simpler text
+tree.heading("Loss ❌", text="Loss") # Simpler text
+tree.heading("Delete 🗑️", text="Del") # Simpler text
+
+# Configure Column Widths and Anchors (adjust as needed)
+tree.column("Match", width=300, anchor="w")
+tree.column("League", width=150, anchor="w")
+tree.column("Odds", width=60, anchor="center")
+tree.column("Stake", width=90, anchor="e")
+tree.column("Result", width=80, anchor="center")
+tree.column("Payout", width=90, anchor="e")
+tree.column("Date", width=140, anchor="center")
+tree.column("Win ✅", width=40, anchor="center") # Adjust width
+tree.column("Loss ❌", width=40, anchor="center") # Adjust width
+tree.column("Delete 🗑️", width=40, anchor="center") # Adjust width
+# --- End Headings/Columns ---
+
+# --- Scrollbar Style --- 
+# Basic scrollbar, styling is limited in ttk
 scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=tree.yview)
 tree.configure(yscrollcommand=scrollbar.set)
-tree.grid(row=1, column=0, sticky='nsew', padx=(10, 0), pady=(0, 10)) # Treeview takes row 1
-scrollbar.grid(row=1, column=1, sticky='ns', padx=(0, 10), pady=(0, 10))
 
-# Bind mouse clicks to functions
-tree.bind('<Button-1>', on_tree_click)      # Left-click handler
-logging.info("--- <Button-1> bound to on_tree_click for history Treeview ---") # <<< ADD THIS LOG
-tree.bind('<Button-3>', show_context_menu) # Right-click handler (for context menu)
+# Grid layout for Treeview and Scrollbar
+tree.grid(row=1, column=0, sticky='nsew', padx=(10, 0), pady=(5, 10)) # Adjust padding
+scrollbar.grid(row=1, column=1, sticky='ns', padx=(0, 10), pady=(5, 10))
+
+# Bindings remain the same
+tree.bind('<Button-1>', on_tree_click)
+logging.info("--- <Button-1> bound to on_tree_click for history Treeview ---") 
+tree.bind('<Button-3>', show_context_menu)
 logging.info("--- <Button-3> bound to show_context_menu for history Treeview ---")
 
-history_frame.grid_rowconfigure(1, weight=1) # Allow treeview row to expand
-history_frame.grid_columnconfigure(0, weight=1) # Allow treeview col to expand
-
-
-# Define tree-related functions after tree creation
-# Add tags based on result in update_history_table function
-# Example of how to add tags (will be done in update_history_table):
-# tree.item(item_id, tags=('win',))
-
+# ... (rest of the UI setup and mainloop) ...
 
 # --- Layout Management --- 
 # Configure grid weights for main layout 
@@ -1642,7 +2351,7 @@ history_frame.grid(row=3, column=1, sticky="nsew", padx=20, pady=(5, 10))
 
 # --- Initial Data Load ---
 # Ensure initial calls happen after main layout setup
-update_history_table() # Load initial history data
+update_history_table(show_only_today=True) # Load initial history data, filtering for today
 update_league_filter() # Update league filter options based on loaded history
 
 # --- Start the main loop ---

@@ -11,7 +11,11 @@ TEAMS = {
         "Athletic Bilbao", "Atletico Madrid", "Barcelona", "Cadiz", "Celta Vigo",
         "Elche", "Espanyol", "Getafe", "Granada", "Levante", "Mallorca", "Osasuna",
         "Real Betis", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Villarreal",
-        "Valladolid"
+        "Valladolid",
+        # Added by user
+        "Deportivo Alaves",
+        # Added by user (Batch 2)
+        "Leganés", "Girona FC"
     ],
     "Bundesliga": [
         "Augsburg", "Bayer Leverkusen", "Bayern Munich", "Bochum", "Borussia Dortmund",
@@ -20,14 +24,18 @@ TEAMS = {
         "Union Berlin", "Wolfsburg",
         # Added based on user list:
         "SC Freiburg", "TSG Hoffenheim", "Werder Bremen", "VfL Wolfsburg", "FC Augsburg",
-        "FC Köln", "VfL Bochum", "FSV Mainz 05", "SV Darmstadt 98"
+        "FC Köln", "VfL Bochum", "FSV Mainz 05", "SV Darmstadt 98",
+        # Added by user
+        "FK Austria Wien", "SK Puntigamer Sturm Graz"
         # Note: Some names might be slight variations of existing ones (e.g., Koln/FC Köln, Hoffenheim/TSG Hoffenheim)
         # Consider standardizing if fuzzy matching doesn't handle it well.
     ],
     "Serie A": [
         "Atalanta", "Bologna", "Cagliari", "Empoli", "Fiorentina", "Genoa",
         "Inter Milan", "Juventus", "Lazio", "Milan", "Napoli", "Roma", "Salernitana",
-        "Sampdoria", "Sassuolo", "Spezia", "Torino", "Udinese", "Venezia", "Verona"
+        "Sampdoria", "Sassuolo", "Spezia", "Torino", "Udinese", "Venezia", "Verona",
+        # Added by user
+        "Parma"
     ],
     "Ligue 1": [
         "Angers", "Bordeaux", "Brest", "Clermont", "Lens", "Lille", "Lyon",
@@ -43,7 +51,9 @@ TEAMS = {
         "Groningen", "Heerenveen", "Heracles", "NEC", "PSV", "RKC Waalwijk", "Sparta Rotterdam",
         "Twente", "Utrecht", "Vitesse", "Willem II",
         # Added based on user list:
-        "Ajax Amsterdam", "AZ Alkmaar", "FC Twente", "SC Heerenveen", "FC Utrecht"
+        "Ajax Amsterdam", "AZ Alkmaar", "FC Twente", "SC Heerenveen", "FC Utrecht",
+        # Added by user
+        "FC Groningen", "Heracles Almelo"
         # Note: Potential variations/duplicates (Ajax/Ajax Amsterdam, AZ/AZ Alkmaar, etc.)
     ],
     "Primeira Liga": [
@@ -81,7 +91,9 @@ TEAMS = {
     ],
     "Greek Super League": [
         "AEK Athens", "Aris", "Asteras Tripolis", "Atromitos", "Ionikos", "Lamia",
-        "Olympiacos", "Panathinaikos", "PAOK", "PAS Giannina", "Volos"
+        "Olympiacos", "Panathinaikos", "PAOK", "PAS Giannina", "Volos",
+        # Added by user - Merged with "Super League"
+        "Kallithea", "Levadiakos", "AS Lamia", "NFC Volos"
     ],
     "Czech First League": [
         "Banik Ostrava", "Bohemians", "Hradec Kralove", "Jablonec", "Karvina",
@@ -114,7 +126,9 @@ TEAMS = {
         "Manisa FK", "Ankaragücü"
     ],
     "Eerste Divisie (Netherlands, 2nd tier)": [
-        "FC Eindhoven", "Telstar"
+        "FC Eindhoven", "Telstar",
+        # Added by user (Batch 2)
+        "Roda JC Kerkrade", "ADO Den Haag"
     ],
     "Meistriliiga (Estonia, 1st tier)": [
         "Harju JK Laagri", "JK Tammeka Tartu"
@@ -123,7 +137,9 @@ TEAMS = {
         "Rio Ave", "Santa Clara"
     ],
     "EFL Championship (England, 2nd tier)": [
-        "Swansea", "Hull"
+        "Swansea", "Hull",
+        # Added by user (Batch 4)
+        "Bristol City"
     ],
     "La Liga 2 (Spain, 2nd tier)": [
         "Espanyol", "Getafe"
@@ -163,6 +179,96 @@ TEAMS = {
     "UEFA Champions League / Friendly": [
         # Consider standardizing Friendly representation
         # "Man Utd", "Lyon" # Already added to UCL above
+    ],
+    # ---- New Leagues Added By User ----
+    "Cup": [
+        "AC Sparta Praha", "FC Viktoria Plzen"
+    ],
+    "Saudi Pro League": [
+        "Al-Kholood Club", "Al-Akhdoud"
+    ],
+    "Ykkösliiga": [
+        "PK-35 Helsinki", "FC Lahti",
+        # Added by user (Batch 2)
+        "PK-35"
+    ],
+    "Copa Libertadores": [
+        # Existing
+        "Club Olimpia", "CA Peñarol",
+        # Argentina
+        "River Plate", "Boca Juniors", "Racing Club", "Vélez Sarsfield", "Estudiantes (LP)", "Talleres (C)", "Central Córdoba (SdE)",
+        # Bolivia
+        "Bolívar", "The Strongest", "Blooming", "San Antonio Bulo Bulo",
+        # Brazil
+        "Botafogo", "Flamengo", "Palmeiras", "São Paulo", "Internacional", "Fortaleza", "Corinthians", "Bahia",
+        # Chile
+        "Colo-Colo", "Universidad de Chile", "Deportes Iquique", "Ñublense",
+        # Colombia
+        "Atlético Nacional", "Atlético Bucaramanga", "Deportes Tolima", "Santa Fe",
+        # Ecuador
+        "LDU Quito", "Independiente del Valle", "Barcelona SC", "El Nacional",
+        # Paraguay
+        # "Olimpia", # Already have "Club Olimpia"
+        "Libertad", "Cerro Porteño", "Nacional", 
+        # Peru
+        "Universitario", "Sporting Cristal", "Alianza Lima", "Melgar",
+        # Uruguay
+        # "Peñarol", # Already have "CA Peñarol"
+        # "Nacional", # Duplicate of Paraguay's Nacional? Need clarification if different.
+        "Boston River", "Defensor Sporting",
+        # Venezuela
+        "Deportivo Táchira", "Carabobo FC", "Universidad Central", "Monagas"
+    ],
+    # ---- New Leagues Added By User (Batch 2) ----
+    "Austrian Bundesliga": [
+        "SK Sturm Graz" # Note: May conflict/duplicate with Bundesliga FK Austria Wien/SK Puntigamer Sturm Graz
+    ],
+    "Belgian First Division B": [
+        "KSC Lokeren-Temse", "RWD Molenbeek"
+    ],
+    "Challenger Pro League": [
+        "Patro Eisden Maasmechelen", "SK Beveren" # Note: May relate to Belgian Pro League
+    ],
+    "Serbian SuperLiga": [
+        "FK Spartak Subotica", "FK Napredak Kruševac"
+    ],
+    "Algerian Ligue 1": [
+        "Paradou AC", "ES Sétif"
+    ],
+    "Norwegian First Division": [
+        "Grorud", "Hødd IL", "Alta IF", "Skeid", "Jerv", "Egersund", "Sandviken", "Sogndal IL"
+    ],
+    "Liga I": [
+        "FC Argeș Pitești", "Steaua București"
+    ],
+    "Bolivian Primera División": [
+        "Bolívar" # Already in Copa Libertadores list
+    ],
+    "Brazilian Série A": [
+        "Palmeiras", "Cruzeiro", "Athletico Paranaense", "Novorizontino" # Palmeiras already in Copa Libertadores
+    ],
+    "Chilean Primera División": [
+        "Universidad Católica", "Palestino"
+    ],
+    "Peruvian Primera División": [
+        "Deportes Iquique", "Cienciano" # Deportes Iquique already in Copa Libertadores
+    ],
+    "Major League Soccer": [
+        "Vancouver Whitecaps", "Inter Miami CF"
+    ],
+    # ---- New Leagues Added By User (Batch 3) ----
+    "Norwegian Second Division": [
+        "Alta IF", "FK Jerv"
+    ],
+    "Liga II": [
+        "FC Argeș Pitești" # Also in Liga I?
+    ],
+    "Ecuadorian Serie A": [
+        "Universidad Católica del Ecuador"
+    ],
+    # ---- New Leagues Added By User (Batch 4) ----
+    "Uruguayan Primera División": [
+        "Peñarol" # Note: Also listed under Copa Libertadores
     ]
 }
 

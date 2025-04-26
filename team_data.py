@@ -13,7 +13,7 @@ TEAMS = {
         "Real Betis", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Villarreal",
         "Valladolid",
         # Added by user
-        "Deportivo Alaves",
+        "Deportivo Alaves", "Alaves",
         # Added by user (Batch 2)
         "Leganés", "Girona FC"
     ],
@@ -26,7 +26,9 @@ TEAMS = {
         "SC Freiburg", "TSG Hoffenheim", "Werder Bremen", "VfL Wolfsburg", "FC Augsburg",
         "FC Köln", "VfL Bochum", "FSV Mainz 05", "SV Darmstadt 98",
         # Added by user
-        "FK Austria Wien", "SK Puntigamer Sturm Graz"
+        "FK Austria Wien", "SK Puntigamer Sturm Graz",
+        # Added from new list
+        "Borussia Mönchengladbach"
         # Note: Some names might be slight variations of existing ones (e.g., Koln/FC Köln, Hoffenheim/TSG Hoffenheim)
         # Consider standardizing if fuzzy matching doesn't handle it well.
     ],
@@ -61,7 +63,9 @@ TEAMS = {
         "Gil Vicente", "Maritimo", "Moreirense", "Pacos de Ferreira", "Porto",
         "Santa Clara", "Sporting", "Tondela", "Vitoria Guimaraes", "Vizela",
         # Added based on user list:
-        "Sporting CP", "SC Braga", "Vitória SC", "FC Famalicão", "Gil Vicente FC"
+        "Sporting CP", "SC Braga", "Vitória SC", "FC Famalicão", "Gil Vicente FC",
+        # Added from new list
+        "Famalicão"
         # Note: Potential variations/duplicates (Sporting/Sporting CP, Braga/SC Braga, etc.)
     ],
     "Super Lig": [
@@ -93,12 +97,16 @@ TEAMS = {
         "AEK Athens", "Aris", "Asteras Tripolis", "Atromitos", "Ionikos", "Lamia",
         "Olympiacos", "Panathinaikos", "PAOK", "PAS Giannina", "Volos",
         # Added by user - Merged with "Super League"
-        "Kallithea", "Levadiakos", "AS Lamia", "NFC Volos"
+        "Kallithea", "Levadiakos", "AS Lamia", "NFC Volos",
+        # Added from new list
+        "Volos NFC"
     ],
     "Czech First League": [
         "Banik Ostrava", "Bohemians", "Hradec Kralove", "Jablonec", "Karvina",
         "Mlada Boleslav", "Pardubice", "Plzen", "Slavia Prague", "Slovacko",
-        "Sparta Prague", "Teplice"
+        "Sparta Prague", "Teplice",
+        # Added from new list
+        "Viktoria Plzen"
     ],
     "Polish Ekstraklasa": [
         "Cracovia", "Gornik Zabrze", "Jagiellonia", "Lech Poznan", "Legia Warsaw",
@@ -128,7 +136,9 @@ TEAMS = {
     "Eerste Divisie (Netherlands, 2nd tier)": [
         "FC Eindhoven", "Telstar",
         # Added by user (Batch 2)
-        "Roda JC Kerkrade", "ADO Den Haag"
+        "Roda JC Kerkrade", "ADO Den Haag",
+        # Added from new list
+        "FC Dordrecht", "MVV Maastricht"
     ],
     "Meistriliiga (Estonia, 1st tier)": [
         "Harju JK Laagri", "JK Tammeka Tartu"
@@ -156,7 +166,7 @@ TEAMS = {
         "Östers IF", "Halmstad", "Örebro SK", "Helsingborg"
     ],
     "UEFA Champions League (International)": [
-        "PSG", "Barcelona", "Borussia Dortmund", "Inter Milan", "Bayern Munich", 
+        "PSG", "Barcelona", "Borussia Dortmund", "Inter Milan", "Bayern Munich",
         "Real Madrid", "Arsenal", "Man Utd", "Lyon" # Note: Many teams already exist in national leagues.
     ],
     "Chinese Super League": [
@@ -170,7 +180,7 @@ TEAMS = {
     ],
     "UEFA Europa League / International": [
         # Consider combining UEFA leagues or clarifying naming
-        "Athletic Bilbao", "Rangers" 
+        "Athletic Bilbao", "Rangers"
     ],
     "UEFA Europa Conference League (International)": [
         # Consider combining UEFA leagues or clarifying naming
@@ -190,7 +200,7 @@ TEAMS = {
     "Ykkösliiga": [
         "PK-35 Helsinki", "FC Lahti",
         # Added by user (Batch 2)
-        "PK-35"
+        "PK-35", "Lahti"
     ],
     "Copa Libertadores": [
         # Existing
@@ -208,26 +218,23 @@ TEAMS = {
         # Ecuador
         "LDU Quito", "Independiente del Valle", "Barcelona SC", "El Nacional",
         # Paraguay
-        # "Olimpia", # Already have "Club Olimpia"
-        "Libertad", "Cerro Porteño", "Nacional", 
+        "Libertad", "Cerro Porteño", "Nacional",
         # Peru
         "Universitario", "Sporting Cristal", "Alianza Lima", "Melgar",
         # Uruguay
-        # "Peñarol", # Already have "CA Peñarol"
-        # "Nacional", # Duplicate of Paraguay's Nacional? Need clarification if different.
         "Boston River", "Defensor Sporting",
         # Venezuela
         "Deportivo Táchira", "Carabobo FC", "Universidad Central", "Monagas"
     ],
     # ---- New Leagues Added By User (Batch 2) ----
     "Austrian Bundesliga": [
-        "SK Sturm Graz" # Note: May conflict/duplicate with Bundesliga FK Austria Wien/SK Puntigamer Sturm Graz
+        "SK Sturm Graz", "Austria Vienna", "Sturm Graz"
     ],
     "Belgian First Division B": [
         "KSC Lokeren-Temse", "RWD Molenbeek"
     ],
     "Challenger Pro League": [
-        "Patro Eisden Maasmechelen", "SK Beveren" # Note: May relate to Belgian Pro League
+        "Patro Eisden Maasmechelen", "SK Beveren"
     ],
     "Serbian SuperLiga": [
         "FK Spartak Subotica", "FK Napredak Kruševac"
@@ -242,16 +249,16 @@ TEAMS = {
         "FC Argeș Pitești", "Steaua București"
     ],
     "Bolivian Primera División": [
-        "Bolívar" # Already in Copa Libertadores list
+        "Bolívar"
     ],
     "Brazilian Série A": [
-        "Palmeiras", "Cruzeiro", "Athletico Paranaense", "Novorizontino" # Palmeiras already in Copa Libertadores
+        "Palmeiras", "Cruzeiro", "Athletico Paranaense", "Novorizontino"
     ],
     "Chilean Primera División": [
         "Universidad Católica", "Palestino"
     ],
     "Peruvian Primera División": [
-        "Deportes Iquique", "Cienciano" # Deportes Iquique already in Copa Libertadores
+        "Deportes Iquique", "Cienciano"
     ],
     "Major League Soccer": [
         "Vancouver Whitecaps", "Inter Miami CF"
@@ -261,14 +268,36 @@ TEAMS = {
         "Alta IF", "FK Jerv"
     ],
     "Liga II": [
-        "FC Argeș Pitești" # Also in Liga I?
+        "FC Argeș Pitești"
     ],
     "Ecuadorian Serie A": [
         "Universidad Católica del Ecuador"
     ],
     # ---- New Leagues Added By User (Batch 4) ----
     "Uruguayan Primera División": [
-        "Peñarol" # Note: Also listed under Copa Libertadores
+        "Peñarol"
+    ],
+    # ---- New Leagues Added From Latest Request ----
+    "Championnat National (France)": [
+        "Martigues"
+    ],
+    "Serie B": [
+        "Parma", "Brescia", "Pisa"
+    ],
+    "Saudi First Division League": [
+        "Al Akhdoud", "Al Khoolood"
+    ],
+    "Paraguayan Primera División": [
+        "Olimpia Asuncion"
+    ],
+    "Super League 2 Greece": [
+        "Kallithea", "Levadiakos"
+    ],
+    "2. Bundesliga": [
+        "Holstein Kiel"
+    ],
+    "Serie C (Italy)": [
+        "Cesena"
     ]
 }
 

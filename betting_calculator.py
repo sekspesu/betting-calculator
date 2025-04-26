@@ -42,34 +42,90 @@ ACCENT_COLOR = "#007AFF"
 BG_COLOR = "#2D2D2D" # Added main background for consistency if needed elsewhere
 # --- End Global UI Colors ---
 
-# File paths
-BANKROLL_FILE = "bankroll.txt"
-HISTORY_FILE = "betting_history.csv"
+# --- Application Data Path Setup ---
+APP_NAME = "BettingCalculator" # Define app name for folder
+
+# Get the user's AppData directory path (works on Windows, macOS, Linux)
+def get_app_data_dir():
+    home = os.path.expanduser("~")
+    if os.name == 'nt': # Windows
+        app_data_path = os.path.join(os.getenv('APPDATA', home), APP_NAME)
+    else: # macOS/Linux (use a hidden directory in home)
+        app_data_path = os.path.join(home, "." + APP_NAME.lower())
+
+    # Create the directory if it doesn't exist
+    try:
+        os.makedirs(app_data_path, exist_ok=True)
+        logging.info(f"Ensured application data directory exists: {app_data_path}")
+    except OSError as e:
+        logging.error(f"Could not create application data directory {app_data_path}: {e}")
+        # Fallback to current directory if AppData fails?
+        messagebox.showerror("Fatal Error", f"Could not create data directory:\n{app_data_path}\n\nPlease check permissions. App cannot save data.")
+        # Depending on severity, you might exit here: sys.exit(1)
+        app_data_path = "." # Fallback to current dir (less ideal for persistence)
+    return app_data_path
+
+APP_DATA_DIR = get_app_data_dir()
+# --- End Application Data Path Setup ---
+
+# File paths (Now relative to APP_DATA_DIR)
+BANKROLL_FILE = os.path.join(APP_DATA_DIR, "bankroll.txt")
+HISTORY_FILE = os.path.join(APP_DATA_DIR, "betting_history.csv")
 
 # Load/Save Functions
 def load_bankroll():
+    # Ensure path exists before attempting to read
     if os.path.exists(BANKROLL_FILE):
-        with open(BANKROLL_FILE, "r") as f:
-            return float(f.read().strip())
+        try:
+            with open(BANKROLL_FILE, "r") as f:
+                return float(f.read().strip())
+        except (IOError, ValueError) as e:
+            logging.error(f"Error reading bankroll file {BANKROLL_FILE}: {e}")
+            messagebox.showerror("Load Error", f"Could not read bankroll file.\nError: {e}")
+    # Return default if file doesn't exist or is invalid
     return 200.0
 
 def save_bankroll(br):
-    with open(BANKROLL_FILE, "w") as f:
-        f.write(str(br))
+    try:
+        with open(BANKROLL_FILE, "w") as f:
+            f.write(str(br))
+        logging.info(f"Bankroll saved to {BANKROLL_FILE}")
+    except IOError as e:
+        logging.error(f"Error saving bankroll to {BANKROLL_FILE}: {e}")
+        messagebox.showerror("Save Error", f"Could not save bankroll.\nError: {e}")
 
 def load_history():
+    # Ensure path exists before attempting to read
     if os.path.exists(HISTORY_FILE):
-        df = pd.read_csv(HISTORY_FILE)
-        # Ensure all required columns exist
-        required_columns = ["Match", "League", "Odds", "Stake", "Result", "Payout", "Date"]
-        for col in required_columns:
-            if col not in df.columns:
-                df[col] = "" if col == "League" else 0.0
-        return df
+        try:
+            df = pd.read_csv(HISTORY_FILE)
+            # Ensure all required columns exist
+            required_columns = ["Match", "League", "Odds", "Stake", "Result", "Payout", "Date"]
+            for col in required_columns:
+                if col not in df.columns:
+                    df[col] = "" if col == "League" else 0.0
+            return df
+        except (IOError, pd.errors.EmptyDataError) as e: # Catch empty file error
+            logging.error(f"Error reading or parsing history file {HISTORY_FILE}: {e}")
+            # Don't show error for empty file, just return empty DataFrame
+            if not isinstance(e, pd.errors.EmptyDataError):
+                messagebox.showerror("Load Error", f"Could not read betting history.\nError: {e}")
+        except Exception as e: # Catch other potential pandas errors
+            logging.error(f"Unexpected error loading history file {HISTORY_FILE}: {e}")
+            messagebox.showerror("Load Error", f"Could not load betting history due to unexpected error.\nError: {e}")
+    # Return empty DataFrame if file doesn't exist or has issues
     return pd.DataFrame(columns=["Match", "League", "Odds", "Stake", "Result", "Payout", "Date"])
 
 def save_history(df):
-    df.to_csv(HISTORY_FILE, index=False)
+    try:
+        df.to_csv(HISTORY_FILE, index=False)
+        logging.info(f"History saved to {HISTORY_FILE}")
+    except IOError as e:
+        logging.error(f"Error saving history to {HISTORY_FILE}: {e}")
+        messagebox.showerror("Save Error", f"Could not save betting history.\nError: {e}")
+    except Exception as e: # Catch potential pandas errors during save
+        logging.error(f"Unexpected error saving history: {e}")
+        messagebox.showerror("Save Error", f"Could not save betting history due to unexpected error.\nError: {e}")
 
 def update_league_filter():
     """Updates the league filter combobox with unique leagues from history."""
@@ -408,25 +464,26 @@ def _parse_format_friend(lines):
     return bets
 # <<< END HELPER FUNCTION >>>
 
-# <<< NEW HELPER FUNCTION for New Site Format >>>
-def _parse_format_new_site(lines):
-    """Parses bet information assuming the new screenshot format provided."""
-    logging.info("Attempting parsing using New Site Format rules...")
+# <<< NEW HELPER FUNCTION for Bet365 Format >>>
+def _parse_format_bet365(lines):
+    """Parses bet information assuming the Bet365 screenshot format provided."""
+    logging.info("Attempting parsing using Bet365 Format rules...")
     bets = []
     num_lines = len(lines)
     i = 0
 
-    # --- Regex Patterns for New Site ---
+    # --- Regex Patterns for Bet365 ---
     # Update selection pattern to look for bullet • or other leading non-word char
     # Make the leading symbol optional/general to handle OCR variations
-    selection_pattern = re.compile(r'^\s*\W?\s*(.+?)\s+([\d.,]+)\s*$', re.IGNORECASE) # Changed from ✔
-    bet_type_pattern = re.compile(r'^(Double Chance|Match Result|Over/Under)', re.IGNORECASE) 
+    selection_pattern = re.compile(r'^\s*\W?\s*(.+?)\s+([\d.,]+)\s*$', re.IGNORECASE)
+    # <<< ADDED vs_pattern >>>
+    vs_pattern = re.compile(r'^\s*(.+?)\s+(?:vs[.]?|-)\s+(.+?)\s*$', re.IGNORECASE)
     stake_pattern = re.compile(r'^\s*Stake\s+€?([\d.,]+)\s*$', re.IGNORECASE)
-    ignore_words_solo = ["return", "stake", "single", "double chance", "cagliari", "fiorentina", "genoa", "lazio", "to return", "cash out"]
+    ignore_words_solo = ["return", "stake", "single", "double chance", "cagliari", "fiorentina", "genoa", "lazio", "to return", "cash out"] # Keep existing ignores
 
     while i < num_lines:
         line = lines[i]
-        logging.debug(f"[New Site Format] Processing line {i}: '{line}'")
+        logging.debug(f"[Bet365 Format] Processing line {i}: '{line}'") # Renamed log prefix
         processed_bet_on_this_line = False
 
         selection_match = selection_pattern.match(line)
@@ -437,34 +494,55 @@ def _parse_format_new_site(lines):
                 odds_str_raw = selection_match.group(2)
                 odds_str = odds_str_raw.replace(',', '.')
                 odds = float(odds_str)
-                
-                MIN_ODDS = 1.01
-                MAX_ODDS = 50.0 
-                if not (MIN_ODDS <= odds <= MAX_ODDS):
-                    logging.warning(f"    [New Site] Odds {odds:.2f} invalid. Skipping.")
-                    i += 1 
-                    continue 
 
-                logging.info(f"[New Site] Potential Bet: Selection='{selection_text}', Odds={odds:.2f}")
+                MIN_ODDS = 1.01
+                MAX_ODDS = 50.0
+                if not (MIN_ODDS <= odds <= MAX_ODDS):
+                    logging.warning(f"    [Bet365] Odds {odds:.2f} invalid. Skipping.") # Renamed log prefix
+                    i += 1
+                    continue
+
+                logging.info(f"[Bet365] Potential Bet: Selection='{selection_text}', Odds={odds:.2f}") # Renamed log prefix
                 current_bet = {'selection': selection_text, 'odds': odds}
                 found_stake = False
-                found_teams = False
-                team_a = "Team A?"
-                team_b = "Team B?"
+                # <<< MODIFIED: found_teams now stores the match string or False >>>
+                found_teams_string = False # Initialize to False
+                team_a = "Team A?" # Keep for fallback
+                team_b = "Team B?" # Keep for fallback
                 last_scanned_line_idx = i
 
-                search_end_idx = min(i + 8, num_lines)
-                # Remove dependency on finding bet type line first
-                # found_bet_type_line_idx = -1 
-                potential_teams = []
-                
-                # --- Find Stake and Potential Teams --- 
-                # We need stake, and try to find 2 teams in the next few lines
+                # <<< MODIFIED: Search range for vs_pattern (e.g., 2 lines before, 4 lines after) >>>
+                vs_search_start = max(0, i - 2)
+                vs_search_end = min(num_lines, i + 5) # Check a bit further after
+                match_display_string = None # Will hold the "Team A vs Team B" string if found
+
+                for k in range(vs_search_start, vs_search_end):
+                    vs_match = vs_pattern.match(lines[k])
+                    if vs_match:
+                        team_a_vs = vs_match.group(1).strip()
+                        team_b_vs = vs_match.group(2).strip()
+                        # Check if the found matchup seems relevant to the selection
+                        # (e.g., one of the team names contains the selection text, or vice versa)
+                        # Be careful with partial matches (e.g., "Man" in "Man City" vs "Man Utd")
+                        selection_part = selection_text.split(' or ')[0].strip().lower()
+                        if selection_part in team_a_vs.lower() or selection_part in team_b_vs.lower() or \
+                           team_a_vs.lower() in selection_part or team_b_vs.lower() in selection_part:
+                           match_display_string = f"{team_a_vs} vs {team_b_vs}"
+                           found_teams_string = match_display_string # Store the found string
+                           logging.info(f"    [Bet365] Found full matchup '{match_display_string}' via vs_pattern on line {k}.") # Renamed log prefix
+                           # Extract individual teams for league guessing if possible
+                           team_a = team_a_vs
+                           team_b = team_b_vs
+                           break # Prioritize the first good 'vs' match found
+
+                # --- Find Stake (Scan after the selection line) ---
+                # We still need to find the stake after the selection line
+                search_end_idx = min(i + 8, num_lines) # Original search range for stake etc.
                 for j in range(i + 1, search_end_idx):
                     scan_line = lines[j].strip()
                     last_scanned_line_idx = max(last_scanned_line_idx, j)
 
-                    # Check for Stake
+                    # Check for Stake (only if not already found)
                     if not found_stake:
                         stake_match = stake_pattern.match(scan_line)
                         if stake_match:
@@ -472,72 +550,86 @@ def _parse_format_new_site(lines):
                                 stake_str = stake_match.group(1).replace(',', '.')
                                 current_bet['stake'] = float(stake_str)
                                 found_stake = True
-                                logging.info(f"    [New Site] Found Stake: {current_bet['stake']:.2f} on line {j}")
+                                logging.info(f"    [Bet365] Found Stake: {current_bet['stake']:.2f} on line {j}") # Renamed log prefix
                             except ValueError:
-                                logging.warning(f"    [New Site] Failed parse stake: '{stake_match.group(1)}' on line {j}")
-                                
-                    # Look for Teams (if we haven't found 2 already)
-                    if not found_teams:
-                        # Use the same heuristic as before, but don't wait for bet_type line
+                                logging.warning(f"    [Bet365] Failed parse stake: '{stake_match.group(1)}' on line {j}") # Renamed log prefix
+
+                    # --- Fallback Team Detection (Only if vs_pattern failed) ---
+                    # If we haven't found a 'Team A vs Team B' string yet, try the old method
+                    if not found_teams_string and not found_stake: # Don't look for teams after stake is found maybe? Or adjust logic. Let's keep looking for now.
+                        # <<< Keep the original fallback logic here, but check found_teams_string first >>>
+                        potential_teams = [] # Reset potential_teams for each bet
                         if scan_line and re.search(r'[a-zA-Z]', scan_line) and \
                            scan_line.lower() not in ignore_words_solo and \
                            not stake_pattern.match(scan_line) and \
-                           not selection_pattern.match(scan_line): 
+                           not selection_pattern.match(scan_line) and \
+                           not vs_pattern.match(scan_line): # Avoid matching the 'vs' line again
 
                              cleaned_team_name = re.sub(r'(^\W+|\W+$)', '', scan_line).strip()
-                             
-                             if cleaned_team_name: 
-                                  # Basic check: Avoid adding the bet selection text itself as a team name
-                                  # Use SequenceMatcher for slightly fuzzy comparison
+
+                             if cleaned_team_name:
                                   selection_part = selection_text.split(' or ')[0].strip() # Get primary part of selection
                                   similarity = SequenceMatcher(None, cleaned_team_name.lower(), selection_part.lower()).ratio()
-                                  
+
+                                  # <<< Consider adjusting similarity threshold if needed >>>
                                   if similarity < 0.8: # If it's not too similar to the selection
-                                       potential_teams.append(cleaned_team_name)
-                                       logging.debug(f"        [New Site] Potential team appended: '{cleaned_team_name}'")
-                                       if len(potential_teams) == 2:
-                                           team_a = potential_teams[0]
-                                           team_b = potential_teams[1]
-                                           found_teams = True
-                                           logging.info(f"    [New Site] Found potential Teams: '{team_a}' and '{team_b}'")
+                                       if cleaned_team_name not in potential_teams: # Avoid duplicates
+                                            potential_teams.append(cleaned_team_name)
+                                            logging.debug(f"        [Bet365 Fallback] Potential team appended: '{cleaned_team_name}'") # Renamed log prefix
+                                            if len(potential_teams) == 2:
+                                                team_a = potential_teams[0]
+                                                team_b = potential_teams[1]
+                                                # <<< Set found_teams_string with fallback result >>>
+                                                found_teams_string = f"{team_a} vs {team_b}" # Store the combined string
+                                                logging.info(f"    [Bet365 Fallback] Found potential Teams: '{team_a}' and '{team_b}'") # Renamed log prefix
+                                                # Maybe break inner loop once two teams found?
                                   else:
-                                       logging.debug(f"        [New Site] Skipping potential team '{cleaned_team_name}' - too similar to selection '{selection_part}'")
+                                       logging.debug(f"        [Bet365 Fallback] Skipping potential team '{cleaned_team_name}' - too similar to selection '{selection_part}'") # Renamed log prefix
+                    # --- End Fallback Team Detection ---
 
-                    # If we found stake AND 2 teams, we can stop scanning early
-                    if found_stake and found_teams:
-                         break 
+                    # Optimization: If we found stake AND a team string (either method), we can stop scanning
+                    if found_stake and found_teams_string:
+                         break
 
-                # --- Finalize Bet --- (Logic remains the same)
-                # ... existing code ...
-
+                # --- Finalize Bet ---
                 if found_stake:
-                    if found_teams:
-                         match_display_string = f"{team_a} vs {team_b}"
+                    # <<< Use found_teams_string directly if available >>>
+                    if found_teams_string:
+                         # We already have the full match string and potentially team_a/team_b
+                         # If vs_pattern found it, team_a/b are set.
+                         # If fallback found it, team_a/b are set.
+                         final_match_string = found_teams_string
+                         # Use the potentially updated team_a for league guessing
+                         league_guess_team = team_a
+                         logging.info(f"    [Bet365] Using team string: '{final_match_string}'") # Renamed log prefix
                     else:
-                         match_display_string = re.sub(r'\s+or\s+Draw$', '', selection_text, flags=re.IGNORECASE).strip()
-                         logging.warning(f"    [New Site] Teams not reliably found. Using '{match_display_string}' as Match name.")
-                    
-                    current_bet['team'] = match_display_string
-                    current_bet['league'] = get_team_league(team_a if found_teams else match_display_string)
+                         # Fallback if no teams found by either method
+                         final_match_string = re.sub(r'\s+or\s+Draw$', '', selection_text, flags=re.IGNORECASE).strip()
+                         league_guess_team = final_match_string # Use the cleaned selection for league guess
+                         logging.warning(f"    [Bet365] Teams not found. Using cleaned selection '{final_match_string}' as Match name.") # Renamed log prefix
+
+                    current_bet['team'] = final_match_string
+                    # <<< Use league_guess_team for guessing >>>
+                    current_bet['league'] = get_team_league(league_guess_team)
                     if current_bet['league'] == "Other": current_bet['league'] = "Unknown League"
-                    current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] 
-                    
-                    logging.info(f"[New Site] Adding complete bet: {current_bet}")
+                    current_bet['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+                    logging.info(f"[Bet365] Adding complete bet: {current_bet}") # Renamed log prefix
                     bets.append(current_bet)
-                    i = last_scanned_line_idx 
+                    i = last_scanned_line_idx
                     processed_bet_on_this_line = True
                 else:
-                    logging.warning(f"[New Site] Discarding bet (Stake missing): Selection='{selection_text}'")
+                    logging.warning(f"[Bet365] Discarding bet (Stake missing): Selection='{selection_text}'") # Renamed log prefix
 
             except ValueError:
-                logging.warning(f"[New Site] Could not parse odds '{selection_match.group(2)}'. Skipping line.")
+                logging.warning(f"[Bet365] Could not parse odds '{selection_match.group(2)}'. Skipping line.") # Renamed log prefix
             except Exception as e:
-                logging.error(f"[New Site] Unexpected error parsing bet line {i}: {e}", exc_info=True)
+                logging.error(f"[Bet365] Unexpected error parsing bet line {i}: {e}", exc_info=True) # Renamed log prefix
 
         if not processed_bet_on_this_line:
             i += 1
-            
-    logging.info(f"New Site Format parsing finished. Found {len(bets)} bets.")
+
+    logging.info(f"Bet365 Format parsing finished. Found {len(bets)} bets.") # Renamed log prefix
     return bets
 # <<< END HELPER FUNCTION >>>
 
@@ -573,11 +665,12 @@ def extract_bet_info(image_path):
         lines_lower = [l.lower() for l in lines]
         
         # --- New Site Format Specifics (Checkmark or Bullet) ---
-        new_site_selection_pattern = r'^\s*\W?\s*(.+?)\s+[\d.,]+\s*$' # Looser check for selection line
-        has_new_site_selection = re.search(new_site_selection_pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
+        # <<< Rename variable and comment >>>
+        bet365_selection_pattern = r'^\s*\W?\s*(.+?)\s+[\d.,]+\s*$' # Looser check for Bet365 selection line
+        has_bet365_selection = re.search(bet365_selection_pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
         has_bet_type_line = any(re.match(r'^(double chance|match result|over/under)', l) for l in lines_lower)
-        has_new_site_stake = re.search(r'^stake\s+€?[\d.,]+', text_lower, flags=re.MULTILINE) is not None
-        new_site_format_likely = has_new_site_selection and has_bet_type_line and has_new_site_stake
+        has_bet365_stake = re.search(r'^stake\s+€?[\d.,]+', text_lower, flags=re.MULTILINE) is not None
+        bet365_format_likely = has_bet365_selection and has_bet_type_line and has_bet365_stake
 
         # --- Friend Format Specifics ---
         # Restore Friend Format Check
@@ -604,15 +697,16 @@ def extract_bet_info(image_path):
         coolbet_format_likely = has_team_vs_team and has_match_result_line
         
         # --- Original Format Specifics (Less precise): ---
-        has_original_stake_label = 'stake' in text_lower 
+        has_original_stake_label = 'stake' in text_lower
 
-        logging.debug(f"Format detection heuristics: new_site_likely={new_site_format_likely}, friend_likely={friend_format_likely}, coolbet_likely={coolbet_format_likely}, has_original_stake={has_original_stake_label}")
+        logging.debug(f"Format detection heuristics: bet365_likely={bet365_format_likely}, friend_likely={friend_format_likely}, coolbet_likely={coolbet_format_likely}, has_original_stake={has_original_stake_label}")
 
         # --- Apply Detection Rules (Adjusted Order) ---
         # Prioritize the more specific new format
-        if new_site_format_likely:
-            detected_format = "New Site"
-            bets = _parse_format_new_site(lines)
+        # <<< Update checks and calls to use bet365 name >>>
+        if bet365_format_likely:
+            detected_format = "Bet365"
+            bets = _parse_format_bet365(lines)
         elif friend_format_likely:
             detected_format = "Friend"
             bets = _parse_format_friend(lines)
@@ -625,9 +719,9 @@ def extract_bet_info(image_path):
         else:
             # Fallback: Try all parsers if no specific format detected clearly
             logging.warning("Could not reliably detect format based on primary heuristics. Trying fallbacks...")
-            # Try New Site first in fallback?
-            detected_format = "New Site (Fallback)"
-            bets = _parse_format_new_site(lines)
+            # Try Bet365 first in fallback?
+            detected_format = "Bet365 (Fallback)"
+            bets = _parse_format_bet365(lines)
             if not bets:
                 detected_format = "Friend (Fallback)"
                 bets = _parse_format_friend(lines)
